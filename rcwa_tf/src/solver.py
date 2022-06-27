@@ -1024,14 +1024,6 @@ def simulate(ER_t, UR_t, params = initialize_params()):
         coefficients and powers.
   '''
 
-  # Debug OOM.
-  debug = params['debug']
-  if debug:
-    import tf_utils
-    print('Entering solver.simulate...')
-    gpu_memory_init = tf_utils.gpu_memory_info()
-    print('Initial memory: ' + tf_utils.gpu0_memory_usage_str())
-
   # Extract commonly used parameters from the `params` dictionary.
   batchSize = params['batchSize']
   pixelsX = params['pixelsX']
@@ -1041,31 +1033,18 @@ def simulate(ER_t, UR_t, params = initialize_params()):
 
   ### Step 3: Build convolution matrices for the permittivity and permeability ###
   ERC = rcwa_utils.convmat(ER_t, PQ[0], PQ[1])
-    
-  if debug:
-    print('ERC: ' + str(ERC.shape) + ' ' + tf_utils.gpu0_memory_usage_str())
-  
   URC = rcwa_utils.convmat(UR_t, PQ[0], PQ[1])
-  
-  if debug:
-    print('URC: ' + str(URC.shape) + ' ' + tf_utils.gpu0_memory_usage_str())
 
   ### Step 4: Wave vector expansion ###
   I = np.eye(np.prod(PQ), dtype = complex)
   I = tf.convert_to_tensor(I, dtype = tf.complex64)
   I = I[tf.newaxis, tf.newaxis, tf.newaxis, tf.newaxis, :, :]
   I = tf.tile(I, multiples = (batchSize, pixelsX, pixelsY, Nlay, 1, 1))
-
-  if debug:
-    print('I: ' + str(I.shape) + ' ' + tf_utils.gpu0_memory_usage_str())
   
   Z = np.zeros((np.prod(PQ), np.prod(PQ)), dtype = complex)
   Z = tf.convert_to_tensor(Z, dtype = tf.complex64)
   Z = Z[tf.newaxis, tf.newaxis, tf.newaxis, tf.newaxis, :, :]
   Z = tf.tile(Z, multiples = (batchSize, pixelsX, pixelsY, Nlay, 1, 1))
-
-  if debug:
-    print('Z: ' + str(Z.shape) + ' ' + tf_utils.gpu0_memory_usage_str())
     
   n1 = np.sqrt(params['er1'])
   n2 = np.sqrt(params['er2'])
@@ -1411,10 +1390,6 @@ def simulate(ER_t, UR_t, params = initialize_params()):
   T = tf.math.real(KZtrn / params['ur2']) / tf.math.real(kinc_z0 / params['ur2'])
   T = tf.linalg.matmul(T, T2)
   T = tf.reshape(T, shape = (batchSize, pixelsX, pixelsY, PQ[0], PQ[1]))
-
-  if debug:
-    print('T: ' + str(T.shape) + ' ' + tf_utils.gpu0_memory_usage_str())
-  
   TRN = tf.math.reduce_sum(T, axis = [3, 4])
 
   # Store the transmission/reflection coefficients and powers in a dictionary.
@@ -1429,10 +1404,5 @@ def simulate(ER_t, UR_t, params = initialize_params()):
   outputs['tz'] = tz
   outputs['T'] = T
   outputs['TRN'] = TRN
-    
-  # Debug OOM.
-  #gpu_memory_final = tf_utils.gpu_memory_info()
-  #gpu_memory_used = [gpu_memory_final[1][0] - gpu_memory_init[1][0], gpu_memory_final[1][1] - gpu_memory_init[1][1]]
-  #print('Memory used on each GPU(MiB) in simulate(): ' + str(gpu_memory_used))
 
   return outputs

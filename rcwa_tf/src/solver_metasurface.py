@@ -51,7 +51,7 @@ def generate_copilot_metasurface_singlelayer(z, params):
     z = tf.clip_by_value(z, clip_value_min = params['eps_min'], clip_value_max = params['eps_max'])
 
     # Repeat entries in z so that it has the shape (batchSize, pixelsX, pixelsY, 1, Nx, Ny)
-    z = z[tf.newaxis, :, :, tf.newaxis, tf.newaxis, tf.newaxis]
+    z = z[tf.newaxis, :, :, :, tf.newaxis, tf.newaxis]
     z = tf.tile(z, multiples = (batchSize, 1, 1, 1, Nx, Ny))
 
     # Build substrate layer and concatenate along the layers dimension.
@@ -67,19 +67,121 @@ def generate_copilot_metasurface_singlelayer(z, params):
     return ER_t, UR_t
 
 
-def init_copilot_metasurface(params):
+def generate_copilot_metasurface_multilayer(z, device, params):
+    '''
+    Generates permittivity/permeability for a discrete, multilayer metasurface design.
+    The metasurface either has material or not at each grid position, and a substrate layer underneath.
+
+    Version 1: Top layer of design is treated separately because it is the only layer being optimized.
+    
+
+    Args:
+        z: A `tf.Tensor` of shape `(pixelsX, pixelsY, 1)` specifying the relative permittivity
+        at each unit cell. Each entry in this tensor should be an float in [1,params['erd']]. This is
+        the top layer of the design, which is currenlty being optimized.
+        
+        device: A `tf.Tensor` of shape `(batchsize, pixelsX, pixelsY, Nlay-1, Nx, Ny)` specifying the 
+        relative permittivity at each unit cell. This is the portion of the design which is not being 
+        optimized - in the first iteration, only the substrate layer.
+        
+        params: A `dict` containing simulation and optimization settings.
+
+    Returns:
+        ER_t: A `tf.Tensor` of shape `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)`
+        specifying the relative permittivity distribution of the unit cell.
+
+        UR_t: A `tf.Tensor` of shape `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)`
+        specifying the relative permeability distribution of the unit cell.
+    '''
+
+    # Retrieve simulation size parameters.
+    batchSize = params['batchSize']
+    pixelsX = params['pixelsX']
+    pixelsY = params['pixelsY']
+    Nlay = params['Nlay']
+    Nx = params['Nx']
+    Ny = params['Ny']
+
+    # Initialize relative permeability.
+    materials_shape = (batchSize, pixelsX, pixelsY, Nlay, Nx, Ny)
+    UR = params['urd'] * np.ones(materials_shape)
+    
+    # Sigmoid pass.
+    if params['thresholding_enabled']:
+        z = tf.math.sigmoid(params['sigmoid_coeff'] * (z - (1 + (params['erd']-1)/2)) )
+        z = 1 + (params['erd'] - 1) * z
+
+    # Limit the optimization ranges.
+    z = tf.clip_by_value(z, clip_value_min = params['eps_min'], clip_value_max = params['eps_max'])
+
+    # Repeat entries in z so that it has the shape (batchSize, pixelsX, pixelsY, Nlay-1, Nx, Ny)
+    z = z[tf.newaxis, :, :, :, tf.newaxis, tf.newaxis]
+    z = tf.tile(z, multiples = (batchSize, 1, 1, 1, Nx, Ny))
+
+    # Build substrate layer and concatenate along the layers dimension.
+    #layer_shape = (batchSize, pixelsX, pixelsY, 1, Nx, Ny)
+    #ER_substrate = params['ers'] * tf.ones(layer_shape, dtype = tf.float32)
+    ER_t = tf.concat(values = [z, device], axis = 3)
+
+    # Cast to complex for subsequent calculations.
+    ER_t = tf.cast(ER_t, dtype = tf.complex64)
+    UR_t = tf.convert_to_tensor(UR, dtype = tf.float32)
+    UR_t = tf.cast(UR_t, dtype = tf.complex64)
+    
+    return ER_t, UR_t
+
+
+def get_substrate_layer(params):
+    '''
+    Generates a tensor representing the substrate layer of the device.
+    
+    Args:
+        params: A `dict` containing simulation and optimization settings.
+    
+    Returns:
+        ER_substrate: A `tf.Tensor` of shape `(batchSize, pixelsX, pixelsY, 1, Nx, Ny)`
+        specifying the relative permittivity distribution of the unit cell in the
+        substrate layer.
+    '''
+    
+    # Retrieve simulation size parameters.
+    batchSize = params['batchSize']
+    pixelsX = params['pixelsX']
+    pixelsY = params['pixelsY']
+    Nlay = params['Nlay']
+    Nx = params['Nx']
+    Ny = params['Ny']
+    
+    # Build and return substrate layer.
+    layer_shape = (batchSize, pixelsX, pixelsY, 1, Nx, Ny)
+    ER_substrate = params['ers'] * tf.ones(layer_shape, dtype = tf.float32)
+    
+    return ER_substrate
+
+
+def init_copilot_metasurface(params, single_layer=False):
     '''
     Generates an initial guess for the metasurface to be optimized.
     If params['random_init'] == 0, returns a initial guess of a metasurface with relative permittivity 
     equal to params['eps_min'] at all pixels. Otherwise, randomly initializes each pixel's permittivity 
     to some value in [params['eps_min'],params['eps_max']].
+    
+    Args:
+        params: A `dict` containing simulation and optimization settings.
+        
+    Returns:
+        init: A `tf.Tensor` of shape `(pixelsX, pixelsY, Nlay-1)` specifying an initial guess for the relative
+        permittivity of the metasurface at each pixel and non-substrate layer.
+    
     '''
     
+    layers = 1 if single_layer else params['Nlay']-1
+    
     if params['random_init']:
-        init = np.random.rand(params['pixelsX'], params['pixelsY'])
+        init = np.random.rand(params['pixelsX'], params['pixelsY'], layers)
         return init * (params['eps_max'] - params['eps_min']) + params['eps_min']
     else:
-        return params['eps_min'] * np.ones(shape=(params['pixelsX'], params['pixelsY']))
+        return params['eps_min'] * np.ones(shape=(params['pixelsX'], params['pixelsY'], layers))
 
 
 def display_metasurface(ER_t, params):
@@ -110,7 +212,7 @@ def display_metasurface(ER_t, params):
     plt.show()
 
     
-def pixel_to_stacked(z, params):
+def pixel_to_stacked(z, params, add_substrate=True, cast=True):
     
     # Retrieve simulation size parameters.
     batchSize = params['batchSize']
@@ -119,24 +221,26 @@ def pixel_to_stacked(z, params):
     Nlay = params['Nlay']
     Nx = params['Nx']
     Ny = params['Ny']
-
+    
     # Initialize relative permeability.
     materials_shape = (batchSize, pixelsX, pixelsY, Nlay, Nx, Ny)
-    UR = params['urd'] * np.ones(materials_shape)
+    UR_t = params['urd'] * np.ones(materials_shape)
+    UR_t = tf.convert_to_tensor(UR_t, dtype = tf.float32)
     
-    # Repeat entries in z so that it has the shape (batchSize, pixelsX, pixelsY, 1, Nx, Ny)
-    z = z[tf.newaxis, :, :, tf.newaxis, tf.newaxis, tf.newaxis]
-    z = tf.tile(z, multiples = (batchSize, 1, 1, 1, Nx, Ny))
+    # Repeat entries in z so that it has the shape (batchSize, pixelsX, pixelsY, Nlay-1, Nx, Ny)
+    ER_t = z[tf.newaxis, :, :, :, tf.newaxis, tf.newaxis]
+    ER_t = tf.tile(ER_t, multiples = (batchSize, 1, 1, 1, Nx, Ny))
+    
+    if (add_substrate):
+        # Build substrate layer and concatenate along the layers dimension.
+        layer_shape = (batchSize, pixelsX, pixelsY, 1, Nx, Ny)
+        ER_substrate = params['ers'] * tf.ones(layer_shape, dtype = tf.float32)
+        ER_t = tf.concat(values = [ER_t, ER_substrate], axis = 3)
 
-    # Build substrate layer and concatenate along the layers dimension.
-    layer_shape = (batchSize, pixelsX, pixelsY, 1, Nx, Ny)
-    ER_substrate = params['ers'] * tf.ones(layer_shape, dtype = tf.float32)
-    ER_t = tf.concat(values = [z, ER_substrate], axis = 3)
-
-    # Cast to complex for subsequent calculations.
-    ER_t = tf.cast(ER_t, dtype = tf.complex64)
-    UR_t = tf.convert_to_tensor(UR, dtype = tf.float32)
-    UR_t = tf.cast(UR_t, dtype = tf.complex64)
+    if (cast):
+        # Cast to complex for subsequent calculations.
+        ER_t = tf.cast(ER_t, dtype = tf.complex64)
+        UR_t = tf.cast(UR_t, dtype = tf.complex64)
     
     return ER_t, UR_t
 
