@@ -78,6 +78,7 @@ def initialize_params(wavelengths = [632.0],
 
         blur_radius: A `float` specifying the radius of the blur function with 
         which a topology optimized permittivity density should be convolved.
+        
     Returns:
         params: A `dict` containing simulation and optimization settings.
   '''
@@ -907,9 +908,16 @@ def make_propagator(params, f):
   ky_limit = ky_limit[:, tf.newaxis, tf.newaxis]
 
   # Apply the antialiasing filter.
-  ellipse_kx = (tf.square(k_x / kx_limit) + tf.square(k_y / k)).numpy() <= 1
-  ellipse_ky = (tf.square(k_x / k) + tf.square(k_y / ky_limit)).numpy() <= 1
-  propagator = propagator * ellipse_kx * ellipse_ky
+  if params['enable_graphmode']:
+     # For graph mode, removed call to .numpy() as this is disallowed by tf.function decorator.
+     ellipse_kx = tf.math.real(tf.square(k_x / kx_limit) + tf.square(k_y / k)) <= 1
+     ellipse_ky = tf.math.real(tf.square(k_x / k) + tf.square(k_y / ky_limit)) <= 1   
+     propagator = propagator * tf.cast(ellipse_kx, tf.complex64) * tf.cast(ellipse_ky, tf.complex64)
+  
+  else:
+     ellipse_kx = tf.math.real(tf.square(k_x / kx_limit) + tf.square(k_y / k)).numpy() <= 1
+     ellipse_ky = tf.math.real(tf.square(k_x / k) + tf.square(k_y / ky_limit)).numpy() <= 1   
+     propagator = propagator * ellipse_kx * ellipse_ky
 
   return propagator
 
@@ -995,7 +1003,14 @@ def define_input_fields(params):
   theta_phase_test = theta_phase_test[:, tf.newaxis, tf.newaxis]
 
   # Apply a linear phase ramp based on the wavelength and thetas.
-  phase_def = 2 * np.pi * np.sin(theta_phase_test) * x_mesh / lam_phase_test
+  if params['enable_graphmode']:
+     # For graph mode, replaced np.sin() with tf.math.sin(), as passing tensors to numpy functions
+     # is disallowed by tf.function decorator
+     phase_def = 2 * np.pi * tf.math.sin(theta_phase_test) * x_mesh / lam_phase_test
+    
+  else:
+     phase_def = 2 * np.pi * np.sin(theta_phase_test) * x_mesh / lam_phase_test
+  
   phase_def = tf.cast(phase_def, dtype = tf.complex64)
 
   return tf.exp(1j * phase_def)

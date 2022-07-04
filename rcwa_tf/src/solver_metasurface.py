@@ -228,7 +228,7 @@ def init_copilot_metasurface(params, single_layer=False):
         params: A `dict` containing simulation and optimization settings.
         
     Returns:
-        init: A `tf.Tensor` of shape `(pixelsX, pixelsY, Nlay-1)` specifying an initial guess for the relative
+        init: A `np.Array of shape `(pixelsX, pixelsY, Nlay-1)` specifying an initial guess for the relative
         permittivity of the metasurface at each pixel and non-substrate layer.
     
     '''
@@ -341,20 +341,13 @@ def diff_height_to_stacked(h, params):
     sigmoid function.
     
     Args:
-        h: Float height of the pixel. Can also be a tensor of any dimension.
+        h: A `tf.Tensor` of shape `(pixelsX, pixelsY)` and type float containing heights of each pixel.
         
         params: A `dict` containing simulation and optimization settings.
     
     Returns:
         z: Stacked representation of the pixel.
     '''
-    
-    #scaling = [params['eps_min'], params['eps_max']]
-    
-    #z = tf.stack([diff_threshold(h, thresh=3, coeff=params['sigmoid_coeff'], offset=2, output_scaling=scaling),
-    #              diff_threshold(h, thresh=2, coeff=params['sigmoid_coeff'], offset=1, output_scaling=scaling),
-    #              diff_threshold(h, thresh=1, coeff=params['sigmoid_coeff'], offset=0, output_scaling=scaling)],
-    #            )
     
     Nlay = params['Nlay']
     z = tf.stack( [diff_threshold(h, thresh=Nlay-1-i,
@@ -377,12 +370,13 @@ def evaluate_solution(focal_plane, params):
         params: A `dict` containing simulation and optimization settings.
     
     Returns:
-        eval: Float evaluation score in range [0, inf).
+        eval_score: Float evaluation score in range [0, inf).
     '''
     
     r = params['focal_spot_radius']
     index = (params['pixelsX'] * params['upsample']) // 2
-    return tf.math.reduce_sum(tf.abs(focal_plane[0, index-r:index+r, index-r:index+r])).numpy()
+    eval_score = tf.math.reduce_sum(tf.abs(focal_plane[0, index-r:index+r, index-r:index+r]))
+    return eval_score.numpy()
 
         
 # Old versions
