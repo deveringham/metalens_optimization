@@ -4,6 +4,7 @@
 
 import tensorflow as tf
 import numpy as np
+import json
 
     
 def convmat(A, P, Q):
@@ -32,8 +33,9 @@ def convmat(A, P, Q):
 
     # Compute indices of spatial harmonics.
     NH = P * Q # total number of harmonics.
-    p_max = np.floor(P / 2.0)
-    q_max = np.floor(P / 2.0)
+    #P_f = tf.cast(P, tf.float32)
+    p_max = tf.math.floordiv(P, 2)
+    q_max = tf.math.floordiv(P, 2)
 
     # Indices along T1 and T2.
     p = np.linspace(-p_max, p_max, P)
@@ -67,7 +69,7 @@ def convmat(A, P, Q):
     # Reshape the coefficients tensor into a stack of convolution matrices.
     convMatrixShape = (batchSize, pixelsX, pixelsY, Nlayers, P * Q, P * Q)      
     matrixStack = tf.reshape(C, shape = convMatrixShape)
-
+    
     return matrixStack
 
 def redheffer_star_product(SA, SB):

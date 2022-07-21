@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import itertools
+import json
 import solver
 import rcwa_utils
 import tensor_utils
@@ -251,7 +252,7 @@ def evaluate_solution(focal_plane, params):
     eval_score = tf.math.reduce_sum(
         tf.abs(focal_plane[0, index-r:index+r, index-r:index+r]) )
 
-    return eval_score.numpy()
+    return float(eval_score.numpy())
 
 
 def optimize_device(user_params):
@@ -294,14 +295,13 @@ def optimize_device(user_params):
                                       Lx=user_params['Lx'],
                                       Ly=user_params['Ly'],
                                       L=user_params['L'],
-                                      Nx=user_params['Nx'],
-                                      eps_min=user_params['eps_min'],
-                                      eps_max=user_params['eps_max'])
+                                      Nx=16,
+                                      eps_min=1.0,
+                                      eps_max=user_params['erd'])
     
     # Merge with the user-provided parameter dictionary.
     params['N'] = user_params['N']
     params['w_l1'] = user_params['w_l1']
-    params['w_l2'] = user_params['w_l2']
     params['sigmoid_coeff'] = user_params['sigmoid_coeff']
     params['sigmoid_update'] = user_params['sigmoid_update']
     params['learning_rate'] = user_params['learning_rate']
@@ -309,15 +309,14 @@ def optimize_device(user_params):
     params['enable_random_init'] = user_params['enable_random_init']
     params['initial_height'] = user_params['initial_height']
     params['enable_debug'] = user_params['enable_debug']
-    params['loss_function'] = user_params['loss_function']
     params['enable_print'] = user_params['enable_print']
+    params['enable_logging'] = user_params['enable_logging']
     
-    params['enable_graphmode'] = False
+    # Get the loss function.
+    loss_function = user_params['loss_function']
     
-    # Get initial guess for metasurface heights.
-    h = tf.Variable(
-            init_layered_metasurface(params, initial_height=params['initial_height']),
-            dtype=tf.float32)
+    # This flag is set if the solver encounters an error.
+    params['err'] = False
     
     # Define the free-space propagator and input field distribution
     # for the metasurface.
@@ -326,21 +325,55 @@ def optimize_device(user_params):
     params['propagator'] = solver.make_propagator(params, params['f'])
     params['input'] = solver.define_input_fields(params)
     
-    # Define an optimizer and tensor to store losses.
+    # Parameters needed to evaluate the loss function:
+    # batchSize, pixelsX, pixelsY, L, Nlay, Nx, Ny, Lx, Ly
+    # urd, ers, sigmoid_coeff, eps_min, eps_max
+    # theta, phi, pte, ptm, lam0
+    # er1, er2 ur1, ur2, PQ
+    # focal_spot_radius, input, propagator, upsample
+    # w_l1
+    
+    # Get initial guess for metasurface heights.
+    h = tf.Variable(
+            init_layered_metasurface(params, initial_height=params['initial_height']),
+            dtype=tf.float32)
+    
+    # Define an optimizer.
     # Store losses as a tensor so that it works in graph mode.
     opt = tf.keras.optimizers.Adam(learning_rate=params['learning_rate'])
-    loss = np.zeros(params['N']+1)
     
-    # Optimize.
+    # Begin optimization.
     if params['enable_print']: print('Optimizing... Iteration ', end="")
-    
-    for i in range(params['N']):
+    N = user_params['N']
+    loss = np.zeros(N+1)
+    for i in range(N):
 
         if params['enable_print']: print(str(i) + ', ', end="")
         
         # Calculate gradients.
         with tf.GradientTape() as tape:
-            l = params['loss_function'](h, params)
+            '''
+            # Catch non-invertable matrix error which occurs for some metasurfaces.
+            # If error occurs, try a couple more times.
+            # If it fails three times in a row, give up and return current metasurface.
+            num_tries = 3
+            for j in range(num_tries):
+                try:
+                    l = loss_function(h, loss_params)
+                except(tf.errors.InvalidArgumentError):
+                    print('Caught non-invertable matrix error while optimizing.')
+                    if j < (num_tries - 1):
+                        continue
+                    else:
+                        print('Non-invertable matrix error repeating. Returning...')
+                        params['err'] = True
+                        return h, loss, params
+                        
+                break
+            '''
+            
+            l = loss_function(h, params)
+            
             grads = tape.gradient(l, [h])
         
         # Apply gradients to variables.
@@ -350,7 +383,7 @@ def optimize_device(user_params):
         loss[i] = l
         
         # Anneal sigmoid coefficient.
-        params['sigmoid_coeff'] += (params['sigmoid_update'] / params['N'])
+        params['sigmoid_coeff'] += (params['sigmoid_update'] / N)
     
     if params['enable_print']: print('Done.')
         
@@ -362,14 +395,28 @@ def optimize_device(user_params):
     h = tf.math.round(h)
     
     # Get final loss.
-    try:
-        l = params['loss_function'](h, params)
-    except(InvalidArgumentError):
-        l = tf.zeros(1)
-        print('Caught non-invertable matrix error for h = ')
-        print(h)
+    '''
+    # Catch non-invertable matrix error which occurs for some metasurfaces.
+    # If error occurs, try a couple more times.
+    # If it fails three times in a row, give up and return current metasurface.
+    num_tries = 2
+    for j in range(num_tries):
+        try:
+            l = loss_function(h, params)
+        except(tf.errors.InvalidArgumentError):
+            print('Caught non-invertable matrix error while getting final loss.')
+            if j < (num_tries - 1):
+                continue
+            else:
+                print('Non-invertable matrix error repeating. Returning...')
+                params['err'] = True
+                return h, loss, params
+
+        break
+    '''
+    loss[N] = loss_function(h,params)
     
-    loss[params['N']] = l
+    if params['enable_print']: print('Final loss = ' + str(l.numpy()))
     
     return h, loss, params
 
@@ -394,47 +441,90 @@ def hyperparameter_gridsearch(user_params):
             Each dict contains a list of the used hyperparameters.
     '''
     
-    # Get dimensions of grid.
-    hp_grid = user_params['param_grid'].values()
-    hp_names = user_params['param_grid'].keys()
-    
-    if params['print']: print('Beginning hyperparameter grid search...')
-    
-    # Create list to store grid search results.
+    # Allocate list of results.
     # Each entry is a dictionary containing the list of hyperparameters used,
     # height representation of the resulting metasurface, focal plane intensity
     # pattern produced by the metasurface, evaluation score of the metasurface,
     # and list of optimization losses for that run.
     results = []
     
+    # Get dimensions of grid.
+    hp_grid = user_params['param_grid'].values()
+    hp_names = user_params['param_grid'].keys()
+    
+    if user_params['enable_print']: print('Beginning hyperparameter grid search...')
+    
     # Iterate over the grid.
     for hyperparams in itertools.product(*hp_grid):
         
-        if params['enable_print']: print('\nTrying hyperparameters: ' + str(list(hp_names)))
-        if params['enable_print']: print(hyperparams)
-        
+        # Otherwise, proceed.
+        if user_params['enable_print']: print('\nTrying hyperparameters: ' + str(list(hp_names)))
+        if user_params['enable_print']: print(hyperparams)
+
         # Update parameter list dict with selected parameters.
         for i, name in enumerate(hp_names):
             user_params[name] = hyperparams[i]
-        
+
         # Run optimization with selected parameters.
         h, loss, params = optimize_device(user_params)
-        
-        # Get the evaluation score the resulting solution.
+
+        # Get the evaluation score of the resulting solution.
         ER_t, UR_t = generate_layered_metasurface(h, params)
         outputs = solver.simulate(ER_t, UR_t, params)
         field = outputs['ty'][:, :, :, np.prod(params['PQ']) // 2, 0]
         focal_plane = solver.propagate(params['input'] * field, 
             params['propagator'], params['upsample'])
         eval_score = evaluate_solution(focal_plane, params)
+
+        # Save result.
+        result = {'hyperparameter_names': list(hp_names),
+            'hyperparameters': hyperparams,
+            'h': h,
+            'loss': loss,
+            'focal_plane': focal_plane,
+            'eval_score': eval_score,
+            'params': params }
+        results.append(result)
         
-        # Save results.
-        r = {'hyperparameters': hyperparams,
-             'h': h,
-             'loss': loss.numpy(),
-             'focal_plane': focal_plane,
-             'eval_score': eval_score,
-             'params': params }
-        results = np.append(results, r)
+        # Log result.
+        if params['enable_logging']:
+            hyperparameter_string = '-'.join([h + str(v) for (h,v) in zip(hp_names,hyperparams)])
+            log_result(result, user_params['log_filename_prefix'] + hyperparameter_string + user_params['log_filename_extension'])
     
     return results
+
+                           
+def log_result(result, log_filename):
+    
+    # Open log file in write mode.
+    with open(log_filename, 'w', encoding="utf-8") as f:
+        
+        # Get json representation of results dict and write to log file.
+        json.dump(make_result_loggable(result), f)
+
+        
+def make_result_loggable(result):
+    
+    # Modify result dict to only include necessary elements
+    # and ensure that they are all json serializable.
+    loggable_result = {'hyperparameter_names': result['hyperparameter_names'],
+                       'hyperparameters': result['hyperparameters'],
+                       'h': result['h'].numpy().tolist(),
+                       'loss': result['loss'].tolist(),
+                       'focal_plane': tf.cast(result['focal_plane'], tf.float32).numpy().tolist(),
+                       'eval_score': result['eval_score'] }
+    
+    return loggable_result
+
+
+def load_result(log_filename):
+     
+    # Open log file in read mode.
+    with open(log_filename, 'r', encoding="utf-8") as f:
+
+        # Read json representation of results from log file.
+        result = json.load(f)
+        result['h'] = tf.convert_to_tensor(result['h'], dtype=tf.float32)
+        result['loss'] = np.array(result['loss'])
+        result['focal_plane'] = tf.convert_to_tensor(result['focal_plane'], dtype=tf.float32)
+        return result
