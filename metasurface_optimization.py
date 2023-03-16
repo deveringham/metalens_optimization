@@ -43,14 +43,15 @@ learning_rate = 8E-1
 ########################################
 
 # Flag to enable hyperparameter grid search.
-enable_hyperparameter_gridsearch = False
+enable_hyperparameter_gridsearch = True
 
 # Values to use in hyperparameter grid search.
 # Stored as a dict. Each dict key is the name of a tunable hyperparameter, i.e.
 # 'N', and its value is a list of values to try for that hyperparameter.
-param_grid = {'N': [10, 20],
-              'sigmoid_update': [20.0, 40.0],
-              'learning_rate': [8E-1] }
+param_grid = {'N': [100, 200],
+              'sigmoid_update': [20.0, 40.0, 80.0],
+              'learning_rate': [2E-1, 4E-1, 8E-1],
+              'initial_height': [0, 1, 2, 3, 4, 5] }
 
 
 ########################################   
@@ -103,7 +104,7 @@ Nlay = 6
 
 # Thickness of each layer (nm). L[0] corresponds to layer closest to the
 # source, and L[-1] to the substrate layer.
-L = [50000.0] * Nlay
+L = [50000.0, 50000.0, 50000.0, 50000.0, 50000.0, 1200000.0] * Nlay
 
 # Length of each pixel in the x direction (nm).
 Lx = 20000.0
@@ -165,6 +166,16 @@ enable_print = True
 enable_timing = True
 
 
+########################################   
+# Logging parameters.
+########################################
+
+# Flag to enable logging.
+enable_logging = True
+
+# File name to use for logging.
+log_filename = 'nearfield_' + str(pixelsX) + 'x' + str(pixelsY) + '.log'
+
 ################################################################################
 # Configure Devices
 ################################################################################
@@ -213,10 +224,10 @@ def loss_function(h, params):
     r = params['focal_spot_radius']
     field = outputs['ty'][:, :, :, np.prod(params['PQ']) // 2, 0]
     focal_plane = solver.propagate(params['input'] * field,
-    	params['propagator'], params['upsample'])
+        params['propagator'], params['upsample'])
     index = (params['pixelsX'] * params['upsample']) // 2
     l1 = tf.math.reduce_sum(
-    	tf.abs(focal_plane[0, index-r:index+r, index-r:index+r]))
+        tf.abs(focal_plane[0, index-r:index+r, index-r:index+r]))
 
     # Second loss term: minimize sum of electric field magnitude elsewhere.
     l2 = tf.math.reduce_sum(tf.abs(focal_plane[0, :, :])) - l1
@@ -277,6 +288,8 @@ with tf.device(tfDevice):
     user_params['enable_print'] = enable_print
     user_params['enable_timing'] = enable_timing
     user_params['enable_debug'] = enable_debug
+    user_params['enable_logging'] = enable_logging
+    user_params['log_filename'] = log_filename
     
     # Set loss function.
     user_params['loss_function'] = loss_function
@@ -319,5 +332,5 @@ with tf.device(tfDevice):
     if use_gpu and enable_gpu_memory_tracking:
         gpu_memory_final = tf_utils.gpu_memory_info()
         gpu_memory_used = [gpu_memory_final[1][0] - gpu_memory_init[1][0],
-        	gpu_memory_final[1][1] - gpu_memory_init[1][1]]
+            gpu_memory_final[1][1] - gpu_memory_init[1][1]]
         print('Memory used on each GPU(MiB): ' + str(gpu_memory_used))

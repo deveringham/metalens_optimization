@@ -1,12 +1,14 @@
-import tensorflow as tf
+import torch
 import numpy as np
-import itertools
-import json
-import solver
-import rcwa_utils
-import tensor_utils
 import matplotlib.pyplot as plt
 from matplotlib import colors
+import itertools
+import json
+import gc
+
+import solver_pt
+import rcwa_utils_pt
+import tensor_utils_pt
 
 
 def generate_layered_metasurface(h, params):
@@ -42,28 +44,27 @@ def generate_layered_metasurface(h, params):
 
     # Initialize relative permeability.
     materials_shape = (batchSize, pixelsX, pixelsY, Nlay, Nx, Ny)
-    UR = params['urd'] * np.ones(materials_shape)
+    UR_t = params['urd'] * torch.ones(materials_shape)
     
     # Limit optimization range.
-    h = tf.clip_by_value(h, clip_value_min = 0, clip_value_max = Nlay-1)
+    h = torch.clamp(h, min = 0, max = Nlay-1) 
     
     # Convert height representation of to stacked representation.
     z = diff_height_to_stacked(h, params)
     
     # Repeat entries in z so that it has the shape
     # (batchSize, pixelsX, pixelsY, 1, Nx, Ny).
-    z = z[tf.newaxis, :, :, :, tf.newaxis, tf.newaxis]
-    z = tf.tile(z, multiples = (batchSize, 1, 1, 1, Nx, Ny))
+    z = z[None, :, :, :, None, None]
+    z = torch.tile(z, (batchSize, 1, 1, 1, Nx, Ny))
 
     # Build substrate layer and concatenate along the layers dimension.
     layer_shape = (batchSize, pixelsX, pixelsY, 1, Nx, Ny)
-    ER_substrate = params['ers'] * tf.ones(layer_shape, dtype = tf.float32)
-    ER_t = tf.concat(values = [z, ER_substrate], axis = 3)
+    ER_substrate = params['ers'] * torch.ones(layer_shape, dtype = torch.float32)
+    ER_t = torch.cat([z, ER_substrate], dim = 3)
 
     # Cast to complex for subsequent calculations.
-    ER_t = tf.cast(ER_t, dtype = tf.complex64)
-    UR_t = tf.convert_to_tensor(UR, dtype = tf.float32)
-    UR_t = tf.cast(UR_t, dtype = tf.complex64)
+    ER_t = ER_t.type(torch.complex64)
+    UR_t = UR_t.type(torch.complex64)
 
     return ER_t, UR_t
 
@@ -101,12 +102,12 @@ def diff_height_to_stacked(h, params):
     '''
     
     Nlay = params['Nlay']
-    z = tf.stack( [diff_threshold(h, thresh=Nlay-1-i,
+    z = torch.stack( [diff_threshold(h, thresh=Nlay-1-i,
                                   coeff=params['sigmoid_coeff'],
                                   offset=Nlay-2-i,
                                   output_scaling = [params['eps_min'],params['eps_max']]) for i in range(Nlay-1) ] )
 
-    return tf.transpose(z, perm=[1,2,0])
+    return torch.permute(z, [1,2,0])
 
 
 def diff_threshold(x, coeff=1, thresh=1, offset=0, output_scaling=[0,1]):
@@ -137,7 +138,7 @@ def diff_threshold(x, coeff=1, thresh=1, offset=0, output_scaling=[0,1]):
 
     '''
     
-    x_new = tf.math.sigmoid(coeff * (x - (offset + (thresh - offset)/2)) )
+    x_new = torch.sigmoid(coeff * (x - (offset + (thresh - offset)/2)) )
     x_new = output_scaling[0] + (output_scaling[1] - output_scaling[0]) * x_new
     return x_new
 
@@ -166,7 +167,7 @@ def get_substrate_layer(params):
     
     # Build and return substrate layer.
     layer_shape = (batchSize, pixelsX, pixelsY, 1, Nx, Ny)
-    ER_substrate = params['ers'] * tf.ones(layer_shape, dtype = tf.float32)
+    ER_substrate = params['ers'] * torch.ones(layer_shape, dtype = torch.float32)
     
     return ER_substrate
 
@@ -194,10 +195,10 @@ def init_layered_metasurface(params, initial_height=0):
     '''
     
     if params['enable_random_init']:
-        init = np.random.rand(params['pixelsX'], params['pixelsY'])
+        init = torch.rand((params['pixelsX'], params['pixelsY']))
         return init * (params['Nlay'] - 1)
     else:
-        return np.ones(shape=(params['pixelsX'], params['pixelsY'])) * initial_height
+        return torch.ones((params['pixelsX'], params['pixelsY'])) * initial_height
 
 
 def display_layered_metasurface(ER_t, params):
@@ -220,12 +221,14 @@ def display_layered_metasurface(ER_t, params):
     images=[]
     fig, axes = plt.subplots(params['Nlay'], 1, figsize=(12,12))
     for l in range(params['Nlay']):
-        img = tf.transpose(tf.squeeze(ER_t[0,:,:,l,:,:]),[0,2,1,3])
-        img = tf.math.real(tf.reshape(img, (params['pixelsX']*params['Nx'],params['pixelsY']*params['Ny'])))
-        images.append(axes[l].matshow(img, interpolation='nearest'))
+        img = torch.permute(torch.squeeze(ER_t[0,:,:,l,:,:]),(0,2,1,3))
+        img = torch.real(torch.reshape(img, (params['pixelsX']*params['Nx'],params['pixelsY']*params['Ny'])))
+        images.append(axes[l].matshow(img.detach().cpu().numpy(), interpolation='nearest'))
+        axes[l].get_xaxis().set_visible(False)
+        axes[l].get_yaxis().set_visible(False)
         images[l].set_norm(norm)
         
-    fig.colorbar(images[0], ax=axes, orientation='horizontal', fraction=.1)
+    #fig.colorbar(images[0], ax=axes, orientation='horizontal', fraction=.1)
     plt.show()
 
 
@@ -249,10 +252,9 @@ def evaluate_solution(focal_plane, params):
     r = params['focal_spot_radius']
     index = (params['pixelsX'] * params['upsample']) // 2
 
-    eval_score = tf.math.reduce_sum(
-        tf.abs(focal_plane[0, index-r:index+r, index-r:index+r]) )
+    eval_score = torch.sum(torch.abs(focal_plane[0, index-r:index+r, index-r:index+r]) )
 
-    return float(eval_score.numpy())
+    return float(eval_score)
 
 
 def optimize_device(user_params):
@@ -280,25 +282,23 @@ def optimize_device(user_params):
 
     '''
     
-    # Initialize and populate dictionary of solver parameters, based on the
-    # dictionary of user-provided parameters.
-    params = solver.initialize_params(wavelengths=user_params['wavelengths'],
-                                      thetas=user_params['thetas'],
-                                      phis=user_params['phis'],
-                                      pte=user_params['pte'],
-                                      ptm=user_params['ptm'],
-                                      pixelsX=user_params['pixelsX'],
-                                      pixelsY=user_params['pixelsY'],
-                                      erd=user_params['erd'],
-                                      ers=user_params['ers'],
-                                      PQ=user_params['PQ'],
-                                      Lx=user_params['Lx'],
-                                      Ly=user_params['Ly'],
-                                      L=user_params['L'],
-                                      Nx=16,
-                                      eps_min=1.0,
-                                      eps_max=user_params['erd'])
-    
+    params = solver_pt.initialize_params(wavelengths=user_params['wavelengths'],
+                                  thetas=user_params['thetas'],
+                                  phis=user_params['phis'],
+                                  pte=user_params['pte'],
+                                  ptm=user_params['ptm'],
+                                  pixelsX=user_params['pixelsX'],
+                                  pixelsY=user_params['pixelsY'],
+                                  erd=user_params['erd'],
+                                  ers=user_params['ers'],
+                                  PQ=user_params['PQ'],
+                                  Lx=user_params['Lx'],
+                                  Ly=user_params['Ly'],
+                                  L=user_params['L'],
+                                  Nx=16,
+                                  eps_min=1.0,
+                                  eps_max=user_params['erd'])
+
     # Merge with the user-provided parameter dictionary.
     params['N'] = user_params['N']
     params['w_l1'] = user_params['w_l1']
@@ -311,116 +311,74 @@ def optimize_device(user_params):
     params['enable_debug'] = user_params['enable_debug']
     params['enable_print'] = user_params['enable_print']
     params['enable_logging'] = user_params['enable_logging']
-    
-    # Get the loss function.
-    loss_function = user_params['loss_function']
-    
-    # This flag is set if the solver encounters an error.
-    params['err'] = False
-    
+    params['log_filename_prefix'] = user_params['log_filename_prefix']
+    params['log_filename_extension'] = user_params['log_filename_extension']
+    params['parameter_string'] = user_params['parameter_string']
+    params['loss_function'] = user_params['loss_function']
+    #params['pt_device'] = user_params['pt_device']
+
     # Define the free-space propagator and input field distribution
     # for the metasurface.
     params['f'] = user_params['f'] * 1E-9
     params['upsample'] = user_params['upsample']
-    params['propagator'] = solver.make_propagator(params, params['f'])
-    params['input'] = solver.define_input_fields(params)
-    
-    # Parameters needed to evaluate the loss function:
-    # batchSize, pixelsX, pixelsY, L, Nlay, Nx, Ny, Lx, Ly
-    # urd, ers, sigmoid_coeff, eps_min, eps_max
-    # theta, phi, pte, ptm, lam0
-    # er1, er2 ur1, ur2, PQ
-    # focal_spot_radius, input, propagator, upsample
-    # w_l1
-    
-    # Get initial guess for metasurface heights.
-    h = tf.Variable(
-            init_layered_metasurface(params, initial_height=params['initial_height']),
-            dtype=tf.float32)
-    
-    # Define an optimizer.
-    # Store losses as a tensor so that it works in graph mode.
-    opt = tf.keras.optimizers.Adam(learning_rate=params['learning_rate'])
-    
-    # Begin optimization.
-    if params['enable_print']: print('Optimizing... Iteration ', end="")
-    N = user_params['N']
-    loss = np.zeros(N+1)
-    for i in range(N):
+    params['propagator'] = solver_pt.make_propagator(params, params['f'])
+    params['input'] = solver_pt.define_input_fields(params)
 
-        if params['enable_print']: print(str(i) + ', ', end="")
-        
-        # Calculate gradients.
-        with tf.GradientTape() as tape:
-            '''
-            # Catch non-invertable matrix error which occurs for some metasurfaces.
-            # If error occurs, try a couple more times.
-            # If it fails three times in a row, give up and return current metasurface.
-            num_tries = 3
-            for j in range(num_tries):
-                try:
-                    l = loss_function(h, loss_params)
-                except(tf.errors.InvalidArgumentError):
-                    print('Caught non-invertable matrix error while optimizing.')
-                    if j < (num_tries - 1):
-                        continue
-                    else:
-                        print('Non-invertable matrix error repeating. Returning...')
-                        params['err'] = True
-                        return h, loss, params
-                        
-                break
-            '''
-            
-            l = loss_function(h, params)
-            
-            grads = tape.gradient(l, [h])
-        
-        # Apply gradients to variables.
-        opt.apply_gradients(zip(grads, [h]))
-        
-        # Keep track of iteration loss.
+    # Get the initial height representation of the metasurface.
+    h = torch.autograd.Variable(init_layered_metasurface(params, initial_height=params['initial_height']),
+                                requires_grad=True)
+
+    # Define optimizer.
+    opt = torch.optim.Adam([h], lr=params['learning_rate'])
+    loss = np.zeros(params['N']+1)
+
+    # Optimize.
+    for i in range(params['N']):
+        print(str(i) + ', ', end="")
+        opt.zero_grad()
+        l = params['loss_function'](h, params)
+        l.backward()
+        opt.step()
         loss[i] = l
-        
+
         # Anneal sigmoid coefficient.
-        params['sigmoid_coeff'] += (params['sigmoid_update'] / N)
-    
-    if params['enable_print']: print('Done.')
-        
+        params['sigmoid_coeff'] += (params['sigmoid_update'] / params['N'])
+    print('Done.')
+
     # Round off to a final, admissable, solution.
     # Do a final range clip.
-    h = tf.clip_by_value(h, clip_value_min=0, clip_value_max=params['Nlay']-1)
-    
-    # Round heights to nearest integer.
-    h = tf.math.round(h)
-    
-    # Get final loss.
-    '''
-    # Catch non-invertable matrix error which occurs for some metasurfaces.
-    # If error occurs, try a couple more times.
-    # If it fails three times in a row, give up and return current metasurface.
-    num_tries = 2
-    for j in range(num_tries):
-        try:
-            l = loss_function(h, params)
-        except(tf.errors.InvalidArgumentError):
-            print('Caught non-invertable matrix error while getting final loss.')
-            if j < (num_tries - 1):
-                continue
-            else:
-                print('Non-invertable matrix error repeating. Returning...')
-                params['err'] = True
-                return h, loss, params
+    h = torch.clamp(h, min=0, max=params['Nlay']-1)
 
-        break
-    '''
-    loss[N] = loss_function(h,params)
+    # Round heights to nearest integer.
+    h = torch.round(h)
+
+    # Get final loss.
+    loss[-1] = params['loss_function'](h, params)
     
     # Get scattering pattern of final solution.
     ER_t, UR_t = generate_layered_metasurface(h, params)
-    outputs = solver.simulate_allsteps(ER_t, UR_t, params)
+    outputs = solver_pt.simulate_allsteps(ER_t, UR_t, params)
     field = outputs['ty'][:, :, :, np.prod(params['PQ']) // 2, 0]
-    focal_plane = solver.propagate(params['input'] * field, params['propagator'], params['upsample'])
+    focal_plane = solver_pt.propagate(params['input'] * field, params['propagator'], params['upsample'])
+    
+    #if params['enable_print']: print('Final loss = ' + str(l.detach().numpy()))
+    
+    # Get the evaluation score of the resulting solution.
+    eval_score = evaluate_solution(focal_plane, params)
+
+    # Log result.
+    if params['enable_logging']:
+        hp_names = ['N', 'sigmoid_update', 'learning_rate', 'initial_height']
+        hyperparams = [user_params[name] for name in hp_names]
+        result = {'hyperparameter_names': list(hp_names),
+            'hyperparameters': hyperparams,
+            'h': h,
+            'loss': loss,
+            'focal_plane': focal_plane,
+            'eval_score': eval_score,
+            'params': params }
+        
+        log_result(result, params['log_filename_prefix'] + params['parameter_string'] + user_params['log_filename_extension'])
     
     return h, loss, params, focal_plane
 
@@ -468,33 +426,18 @@ def hyperparameter_gridsearch(user_params):
         # Update parameter list dict with selected parameters.
         for i, name in enumerate(hp_names):
             user_params[name] = hyperparams[i]
+            
+        # Update log file name.
+        hyperparameter_string = '-'.join([h + str(v) for (h,v) in zip(hp_names,hyperparams)])
+        user_params['parameter_string'] = hyperparameter_string
 
         # Run optimization with selected parameters.
-        h, loss, params = optimize_device(user_params)
+        h, loss, params, focal_plane = optimize_device(user_params)
 
-        # Get the evaluation score of the resulting solution.
-        ER_t, UR_t = generate_layered_metasurface(h, params)
-        outputs = solver.simulate(ER_t, UR_t, params)
-        field = outputs['ty'][:, :, :, np.prod(params['PQ']) // 2, 0]
-        focal_plane = solver.propagate(params['input'] * field, 
-            params['propagator'], params['upsample'])
-        eval_score = evaluate_solution(focal_plane, params)
+        # Clear GPU memory after each run.
+        #torch.cuda.empty_cache()
+        #gc.collect()
 
-        # Save result.
-        result = {'hyperparameter_names': list(hp_names),
-            'hyperparameters': hyperparams,
-            'h': h,
-            'loss': loss,
-            'focal_plane': focal_plane,
-            'eval_score': eval_score,
-            'params': params }
-        results.append(result)
-        
-        # Log result.
-        if params['enable_logging']:
-            hyperparameter_string = '-'.join([h + str(v) for (h,v) in zip(hp_names,hyperparams)])
-            log_result(result, user_params['log_filename_prefix'] + hyperparameter_string + user_params['log_filename_extension'])
-    
     return results
 
                            
@@ -513,9 +456,9 @@ def make_result_loggable(result):
     # and ensure that they are all json serializable.
     loggable_result = {'hyperparameter_names': result['hyperparameter_names'],
                        'hyperparameters': result['hyperparameters'],
-                       'h': result['h'].numpy().tolist(),
+                       'h': result['h'].detach().cpu().numpy().tolist(),
                        'loss': result['loss'].tolist(),
-                       'focal_plane': tf.cast(result['focal_plane'], tf.float32).numpy().tolist(),
+                       'focal_plane': result['focal_plane'].type(torch.float32).detach().cpu().numpy().tolist(),
                        'eval_score': result['eval_score'] }
     
     return loggable_result
@@ -528,7 +471,7 @@ def load_result(log_filename):
 
         # Read json representation of results from log file.
         result = json.load(f)
-        result['h'] = tf.convert_to_tensor(result['h'], dtype=tf.float32)
+        result['h'] = torch.tensor(result['h'], dtype=torch.float32)
         result['loss'] = np.array(result['loss'])
-        result['focal_plane'] = tf.convert_to_tensor(result['focal_plane'], dtype=tf.float32)
+        result['focal_plane'] = torch.tensor(result['focal_plane'], dtype=torch.float32)
         return result

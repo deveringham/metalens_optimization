@@ -4,6 +4,7 @@
 
 import tensorflow as tf
 import numpy as np
+import json
 
 def expand_and_tile_np(array, batchSize, pixelsX, pixelsY):
   '''
@@ -28,7 +29,15 @@ def expand_and_tile_tf(tensor, batchSize, pixelsX, pixelsY):
   '''
   tensor = tensor[tf.newaxis, tf.newaxis, tf.newaxis, :, :]
   return tf.tile(tensor, multiples = (batchSize, pixelsX, pixelsY, 1, 1))
-  
+
+
+def check_eig_tf(A, e, v, eps=1e-4):
+    l = tf.linalg.matvec(A,v)
+    r = v*e
+    mask = tf.abs(l-r) > eps
+    return (tf.reduce_sum(tf.cast(mask, dtype=tf.uint8)) == 0).numpy()
+
+
 @tf.custom_gradient
 def eig_general(A, eps = 1E-6):
   '''
@@ -62,6 +71,29 @@ def eig_general(A, eps = 1E-6):
   # Perform the eigendecomposition.
   eigenvalues, eigenvectors = tf.eig(A)
 
+  #with open("tf.txt", 'w', encoding="utf-8") as f: 
+  #  json.dump(tf.math.real(A).numpy().tolist(),f)
+
+  '''
+  batch0 = eigenvectors.shape[0]
+  batch1 = eigenvectors.shape[1]
+  batch2 = eigenvectors.shape[2]
+  batch3 = eigenvectors.shape[3]
+  rows = eigenvectors.shape[-2]
+  cols = eigenvectors.shape[-1]
+  
+  tf_good = []
+  for b0 in range(batch0):
+    for b1 in range(batch1):
+      for b2 in range(batch2):
+        for b3 in range(batch3):
+          for i in range(rows):
+            tf_good.append(check_eig_tf(A[b0,b1,b2,b3,:,:], eigenvalues[b0,b1,b2,b3,i], eigenvectors[b0,b1,b2,b3,:,i]))
+
+  print('Eig Check (True is pass):')
+  print((np.sum(tf_good) - len(tf_good)) == 0)
+  '''
+    
   # Referse mode gradient calculation.
   def grad(grad_D, grad_U):
 

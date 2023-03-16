@@ -65,7 +65,7 @@ def convmat(A, P, Q):
                         C = value
                     else:
                         C = tf.concat([C, value], axis = 5)
-                        
+    
     # Reshape the coefficients tensor into a stack of convolution matrices.
     convMatrixShape = (batchSize, pixelsX, pixelsY, Nlayers, P * Q, P * Q)      
     matrixStack = tf.reshape(C, shape = convMatrixShape)
