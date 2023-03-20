@@ -1,3 +1,17 @@
+'''
+solver_metasurface_pt.py
+
+Functions implementing optimization algorithm for COPILOT metalens devices,
+using PyTorch differentiable implementation of RCWA.
+
+The important user-facing functions here are -
+
+optimize_device: use to optimize a single device for some given parameters.
+
+hyperparameter_gridsearch: use to optimize many devices for a given grid of
+   algorithm hyperparameters.
+'''
+
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,7 +22,6 @@ import gc
 
 import solver_pt
 import rcwa_utils_pt
-import tensor_utils_pt
 
 
 def generate_layered_metasurface(h, params):
@@ -17,18 +30,18 @@ def generate_layered_metasurface(h, params):
     based on a height representation of the metasurface.
 
     Args:
-        h: A `tf.Tensor` of shape `(pixelsX, pixelsY)` specifying the
+        h: A `torch.Tensor` of shape `(pixelsX, pixelsY)` specifying the
         metasurface height at each unit cell. Each entry in this tensor should
         be a float in [0,params['Nlay']-1].
         
         params: A `dict` containing simulation and optimization settings.
 
     Returns:
-        ER_t: A `tf.Tensor` of shape 
+        ER_t: A `torch.Tensor` of shape 
         `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)` specifying the relative
         permittivity distribution of the unit cell.
 
-        UR_t: A `tf.Tensor` of shape
+        UR_t: A `torch.Tensor` of shape
         `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)` specifying the relative
         permeability distribution of the unit cell.
 
@@ -89,13 +102,13 @@ def diff_height_to_stacked(h, params):
     of the two allowed values.
     
     Args:
-        h: A `tf.Tensor` of shape `(pixelsX, pixelsY)` and type float
+        h: A `torch.Tensor` of shape `(pixelsX, pixelsY)` and type float
             containing heights of each pixel.
         
         params: A `dict` containing simulation and optimization settings.
     
     Returns:
-        z: A `tf.Tensor` of shape `(pixelsX, pixelsY, Nlay-1)` and type float
+        z: A `torch.Tensor` of shape `(pixelsX, pixelsY, Nlay-1)` and type float
             containing relative permittivity of the device at each pixel and on
             each non-substrate layer.
 
@@ -151,7 +164,7 @@ def get_substrate_layer(params):
         params: A `dict` containing simulation and optimization settings.
     
     Returns:
-        ER_substrate: A `tf.Tensor` of shape
+        ER_substrate: A `torch.Tensor` of shape
             `(batchSize, pixelsX, pixelsY, 1, Nx, Ny)' specifying the relative
             permittivity distribution of the unit cell in the substrate layer.
 
@@ -206,7 +219,7 @@ def display_layered_metasurface(ER_t, params):
     Displays stacked representation of a metasurface.
 
     Args:
-        ER_t: A `tf.Tensor` of shape
+        ER_t: A `torch.Tensor` of shape
         `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)` specifying the relative
         permittivity distribution of the unit cell.
         
@@ -228,7 +241,6 @@ def display_layered_metasurface(ER_t, params):
         axes[l].get_yaxis().set_visible(False)
         images[l].set_norm(norm)
         
-    #fig.colorbar(images[0], ax=axes, orientation='horizontal', fraction=.1)
     plt.show()
 
 
@@ -238,7 +250,7 @@ def evaluate_solution(focal_plane, params):
     to compare a solution to others.
     
     Args:
-        focal_plane: A `tf.Tensor` of shape
+        focal_plane: A `torch.Tensor` of shape
             `(batchSize, pixelsX * upsample, pixelsY * upsample)` describing 
             electric field intensity on the focal plane.
     
@@ -270,15 +282,19 @@ def optimize_device(user_params):
             calculated by the RCWA solver.
 
     Returns:
-        h: A `tf.Tensor` of shape `(pixelsX, pixelsY)` and type float
+        h: A `torch.Tensor` of shape `(pixelsX, pixelsY)` and type float
             containing heights of each pixel in the optimized design.
 
-        loss: A 'tf.Tensor' of shape `(N+1)` and type float containing
+        loss: A 'torch.Tensor' of shape `(N+1)` and type float containing
             containing calculated loss at each optimization iteration.
 
         params: A `dict` containing simulation and optimization settings.
             The same as the provided user_params, but also contains
             derived parameters calculated by the RCWA solver.
+            
+        focal_plane: A `torch.Tensor` of shape `(batchSize, params['upsample'] * pixelsX,
+            params['upsample'] * pixelsY)` and dtype `torch.complex64` specifying the 
+            the electric fields at the output plane.
 
     '''
     
@@ -301,7 +317,6 @@ def optimize_device(user_params):
 
     # Merge with the user-provided parameter dictionary.
     params['N'] = user_params['N']
-    params['w_l1'] = user_params['w_l1']
     params['sigmoid_coeff'] = user_params['sigmoid_coeff']
     params['sigmoid_update'] = user_params['sigmoid_update']
     params['learning_rate'] = user_params['learning_rate']
@@ -315,7 +330,6 @@ def optimize_device(user_params):
     params['log_filename_extension'] = user_params['log_filename_extension']
     params['parameter_string'] = user_params['parameter_string']
     params['loss_function'] = user_params['loss_function']
-    #params['pt_device'] = user_params['pt_device']
 
     # Define the free-space propagator and input field distribution
     # for the metasurface.
@@ -333,8 +347,9 @@ def optimize_device(user_params):
     loss = np.zeros(params['N']+1)
 
     # Optimize.
+    if params['enable_print']: print('Optimizing... ', end="")
     for i in range(params['N']):
-        print(str(i) + ', ', end="")
+        if params['enable_print']: print(str(i) + ', ', end="")
         opt.zero_grad()
         l = params['loss_function'](h, params)
         l.backward()
@@ -343,7 +358,7 @@ def optimize_device(user_params):
 
         # Anneal sigmoid coefficient.
         params['sigmoid_coeff'] += (params['sigmoid_update'] / params['N'])
-    print('Done.')
+    if params['enable_print']: print('Done.')
 
     # Round off to a final, admissable, solution.
     # Do a final range clip.
@@ -357,11 +372,9 @@ def optimize_device(user_params):
     
     # Get scattering pattern of final solution.
     ER_t, UR_t = generate_layered_metasurface(h, params)
-    outputs = solver_pt.simulate_allsteps(ER_t, UR_t, params)
+    outputs = solver_pt.simulate(ER_t, UR_t, params)
     field = outputs['ty'][:, :, :, np.prod(params['PQ']) // 2, 0]
     focal_plane = solver_pt.propagate(params['input'] * field, params['propagator'], params['upsample'])
-    
-    #if params['enable_print']: print('Final loss = ' + str(l.detach().numpy()))
     
     # Get the evaluation score of the resulting solution.
     eval_score = evaluate_solution(focal_plane, params)
@@ -400,7 +413,11 @@ def hyperparameter_gridsearch(user_params):
     Returns:
         results: A list of `dict`s, each of which corresponds to one
             run of metasurface optimization for some selected hyperparameters.
-            Each dict contains a list of the used hyperparameters.
+            Each dict contains a list of the used hyperparameters, as well as
+            the height representation of the reulting metasurface, evaluation
+            score assigned to that metasurface, the loss curve for the
+            optimization run, and the focal plane scatter pattern produced
+            by the optimized device.
     '''
     
     # Allocate list of results.
@@ -419,7 +436,6 @@ def hyperparameter_gridsearch(user_params):
     # Iterate over the grid.
     for hyperparams in itertools.product(*hp_grid):
         
-        # Otherwise, proceed.
         if user_params['enable_print']: print('\nTrying hyperparameters: ' + str(list(hp_names)))
         if user_params['enable_print']: print(hyperparams)
 
@@ -433,15 +449,55 @@ def hyperparameter_gridsearch(user_params):
 
         # Run optimization with selected parameters.
         h, loss, params, focal_plane = optimize_device(user_params)
-
-        # Clear GPU memory after each run.
-        #torch.cuda.empty_cache()
-        #gc.collect()
+        
+        # Get the evaluation score of the resulting solution.
+        eval_score = evaluate_solution(focal_plane, params)
+        
+        # Save result.
+        result = {'hyperparameter_names': list(hp_names),
+            'hyperparameters': hyperparams,
+            'h': h,
+            'loss': loss,
+            'focal_plane': focal_plane,
+            'eval_score': eval_score,
+            'params': params }
+        results.append(result)
 
     return results
 
                            
 def log_result(result, log_filename):
+    '''
+    Writes the result of a single optimization run to an output file.
+    
+    Args:
+        result: A dict which corresponds to one run of metasurface optimization for 
+            some selected hyperparameters. It should contain the keys:
+            
+            hyperparameter_names: A list of string names of the hyperparameters being optimized.
+            hyperparameters: A list of hyperparameter values used for this run, corresponding to
+                those in hyperparameter_names.
+               
+            h: A list of shape `(pixelsX, pixelsY)` and type float
+                containing heights of each pixel in the optimized design.
+
+            loss: A list of shape `(N+1)` and type float containing
+                containing calculated loss at each optimization iteration.
+                
+            focal_plane: A list of shape `(batchSize, params['upsample'] * pixelsX,
+                params['upsample'] * pixelsY)` and dtype float specifying the 
+                the real part of electric fields at the output plane.
+            
+            eval_score: Float evaluation score of the solution in range [0, inf).
+
+            params: A `dict` containing simulation and optimization settings.
+        
+        log_filename: A string specifying the relative path of the file to write result to.
+            File is created if it does not exist and overwritten if it does.
+
+    Returns:
+        None
+    '''
     
     # Open log file in write mode.
     with open(log_filename, 'w', encoding="utf-8") as f:
@@ -451,6 +507,18 @@ def log_result(result, log_filename):
 
         
 def make_result_loggable(result):
+    '''
+    Prepares the results dictionary of an optimization run for writing to an output file.
+    
+    Args:
+        result: A dict which corresponds to one run of metasurface optimization for 
+            some selected hyperparameters, structured as in log_result, except that
+            h, loss, and focal_plane may be 'torch.Tensor's.
+
+    Returns:
+        loggable_result: A dict with the same contents as result but with element
+            types converted such that it can be passed to log_result.
+    '''
     
     # Modify result dict to only include necessary elements
     # and ensure that they are all json serializable.
@@ -465,7 +533,17 @@ def make_result_loggable(result):
 
 
 def load_result(log_filename):
-     
+    '''
+    Read results of an optimization run from a file.
+    
+    Args:
+        log_filename: A string specifying the relative path to the output file to be read.
+    
+    Returns:
+        result: A dict containing all information about the recorded optimization run,
+            structured as in log_result.
+    '''
+    
     # Open log file in read mode.
     with open(log_filename, 'r', encoding="utf-8") as f:
 

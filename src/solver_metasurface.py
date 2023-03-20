@@ -223,9 +223,10 @@ def display_layered_metasurface(ER_t, params):
         img = tf.transpose(tf.squeeze(ER_t[0,:,:,l,:,:]),[0,2,1,3])
         img = tf.math.real(tf.reshape(img, (params['pixelsX']*params['Nx'],params['pixelsY']*params['Ny'])))
         images.append(axes[l].matshow(img, interpolation='nearest'))
+        axes[l].get_xaxis().set_visible(False)
+        axes[l].get_yaxis().set_visible(False)
         images[l].set_norm(norm)
         
-    fig.colorbar(images[0], ax=axes, orientation='horizontal', fraction=.1)
     plt.show()
 
 
@@ -301,7 +302,6 @@ def optimize_device(user_params):
     
     # Merge with the user-provided parameter dictionary.
     params['N'] = user_params['N']
-    params['w_l1'] = user_params['w_l1']
     params['sigmoid_coeff'] = user_params['sigmoid_coeff']
     params['sigmoid_update'] = user_params['sigmoid_update']
     params['learning_rate'] = user_params['learning_rate']
@@ -325,14 +325,6 @@ def optimize_device(user_params):
     params['propagator'] = solver.make_propagator(params, params['f'])
     params['input'] = solver.define_input_fields(params)
     
-    # Parameters needed to evaluate the loss function:
-    # batchSize, pixelsX, pixelsY, L, Nlay, Nx, Ny, Lx, Ly
-    # urd, ers, sigmoid_coeff, eps_min, eps_max
-    # theta, phi, pte, ptm, lam0
-    # er1, er2 ur1, ur2, PQ
-    # focal_spot_radius, input, propagator, upsample
-    # w_l1
-    
     # Get initial guess for metasurface heights.
     h = tf.Variable(
             init_layered_metasurface(params, initial_height=params['initial_height']),
@@ -343,7 +335,7 @@ def optimize_device(user_params):
     opt = tf.keras.optimizers.Adam(learning_rate=params['learning_rate'])
     
     # Begin optimization.
-    if params['enable_print']: print('Optimizing... Iteration ', end="")
+    if params['enable_print']: print('Optimizing... ', end="")
     N = user_params['N']
     loss = np.zeros(N+1)
     for i in range(N):
@@ -352,28 +344,7 @@ def optimize_device(user_params):
         
         # Calculate gradients.
         with tf.GradientTape() as tape:
-            '''
-            # Catch non-invertable matrix error which occurs for some metasurfaces.
-            # If error occurs, try a couple more times.
-            # If it fails three times in a row, give up and return current metasurface.
-            num_tries = 3
-            for j in range(num_tries):
-                try:
-                    l = loss_function(h, loss_params)
-                except(tf.errors.InvalidArgumentError):
-                    print('Caught non-invertable matrix error while optimizing.')
-                    if j < (num_tries - 1):
-                        continue
-                    else:
-                        print('Non-invertable matrix error repeating. Returning...')
-                        params['err'] = True
-                        return h, loss, params
-                        
-                break
-            '''
-            
-            l = loss_function(h, params)
-            
+            l = loss_function(h, params) 
             grads = tape.gradient(l, [h])
         
         # Apply gradients to variables.
@@ -395,30 +366,11 @@ def optimize_device(user_params):
     h = tf.math.round(h)
     
     # Get final loss.
-    '''
-    # Catch non-invertable matrix error which occurs for some metasurfaces.
-    # If error occurs, try a couple more times.
-    # If it fails three times in a row, give up and return current metasurface.
-    num_tries = 2
-    for j in range(num_tries):
-        try:
-            l = loss_function(h, params)
-        except(tf.errors.InvalidArgumentError):
-            print('Caught non-invertable matrix error while getting final loss.')
-            if j < (num_tries - 1):
-                continue
-            else:
-                print('Non-invertable matrix error repeating. Returning...')
-                params['err'] = True
-                return h, loss, params
-
-        break
-    '''
     loss[N] = loss_function(h,params)
     
     # Get scattering pattern of final solution.
     ER_t, UR_t = generate_layered_metasurface(h, params)
-    outputs = solver.simulate_allsteps(ER_t, UR_t, params)
+    outputs = solver.simulate(ER_t, UR_t, params)
     field = outputs['ty'][:, :, :, np.prod(params['PQ']) // 2, 0]
     focal_plane = solver.propagate(params['input'] * field, params['propagator'], params['upsample'])
     
@@ -470,14 +422,9 @@ def hyperparameter_gridsearch(user_params):
             user_params[name] = hyperparams[i]
 
         # Run optimization with selected parameters.
-        h, loss, params = optimize_device(user_params)
+        h, loss, params, focal_plane = optimize_device(user_params)
 
         # Get the evaluation score of the resulting solution.
-        ER_t, UR_t = generate_layered_metasurface(h, params)
-        outputs = solver.simulate(ER_t, UR_t, params)
-        field = outputs['ty'][:, :, :, np.prod(params['PQ']) // 2, 0]
-        focal_plane = solver.propagate(params['input'] * field, 
-            params['propagator'], params['upsample'])
         eval_score = evaluate_solution(focal_plane, params)
 
         # Save result.

@@ -1,8 +1,12 @@
-import os
-#os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-#os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+'''
+utils.py
 
-#import tensorflow as tf
+Utility functions for running COPILOT metasurface optimization.
+These configure GPU / CPU device usage for both the TensorFlow
+and PyTorch implementations.
+'''
+
+import os
 from tensorflow.config.experimental import set_memory_growth
 from tensorflow.config import list_physical_devices
 from torch import set_default_tensor_type

@@ -4,10 +4,7 @@ import rcwa_utils
 import tensor_utils
 import utils
 import json
-
 import sys
-sys.path.append('../../src/')
-import checkpointing_dy
 
 def initialize_params(wavelengths = [632.0],
                       thetas = [0.0],
@@ -93,7 +90,7 @@ def initialize_params(wavelengths = [632.0],
   params = dict({})
 
   # Units and tensor dimensions.
-  params['nanometers'] = 1E-9
+  params['micrometers'] = 1E-6
   params['degrees'] = np.pi / 180
   params['batchSize'] = len(wavelengths)
   params['pixelsX'] = pixelsX
@@ -105,7 +102,7 @@ def initialize_params(wavelengths = [632.0],
   simulation_shape = (batchSize, pixelsX, pixelsY)
 
   # Batch parameters (wavelength, incidence angle, and polarization).
-  lam0 = params['nanometers'] * tf.convert_to_tensor(wavelengths, dtype = tf.float32)
+  lam0 = params['micrometers'] * tf.convert_to_tensor(wavelengths, dtype = tf.float32)
   lam0 = lam0[:, tf.newaxis, tf.newaxis, tf.newaxis, tf.newaxis, tf.newaxis]
   lam0 = tf.tile(lam0, multiples = (1, pixelsX, pixelsY, 1, 1, 1))
   params['lam0'] = lam0
@@ -139,12 +136,12 @@ def initialize_params(wavelengths = [632.0],
   params['erd'] = erd # permittivity of device
   params['urs'] = 1.0 # permeability of substrate
   params['ers'] = ers # permittivity of substrate
-  params['Lx'] = Lx * params['nanometers'] # period along x
-  params['Ly'] = Ly * params['nanometers'] # period along y
+  params['Lx'] = Lx * params['micrometers'] # period along x
+  params['Ly'] = Ly * params['micrometers'] # period along y
   length_shape = (1, 1, 1, params['Nlay'], 1, 1)
   L = tf.convert_to_tensor(L, dtype = tf.complex64)
   L = L[tf.newaxis, tf.newaxis, tf.newaxis, :, tf.newaxis, tf.newaxis]
-  params['L'] = L * params['nanometers'] #* tf.ones(shape = length_shape, dtype = tf.complex64)
+  params['L'] = L * params['micrometers'] #* tf.ones(shape = length_shape, dtype = tf.complex64)
   params['length_min'] = 0.1
   params['length_max'] = 2.0
 
@@ -175,7 +172,7 @@ def initialize_params(wavelengths = [632.0],
   params['duty_max'] = 0.9
 
   # Permittivity density blur radius.
-  params['blur_radius'] = blur_radius * params['nanometers']
+  params['blur_radius'] = blur_radius * params['micrometers']
 
   return params
 
@@ -1432,7 +1429,6 @@ def simulate(ER_t, UR_t, params = initialize_params()):
 
 
 def solver_step1(ER_t, UR_t, PQ_f):
-  #print('Step 1:')
 
   ERC = rcwa_utils.convmat(ER_t, int(PQ_f[0]), int(PQ_f[1]))
   URC = rcwa_utils.convmat(UR_t, int(PQ_f[0]), int(PQ_f[1]))
@@ -1440,13 +1436,10 @@ def solver_step1(ER_t, UR_t, PQ_f):
   return ERC, URC
 
 solver_step1_recompute = tf.recompute_grad(solver_step1)
-solver_step1_recompute_dy = checkpointing_dy.checkpointable(solver_step1)
 
 
 def solver_step2(batchSize_f, pixelsX_f, pixelsY_f, Nlay_f, Lx, Ly,
                         theta, phi, lam0, er1, er2, ur1, ur2, PQ_f):
-    
-  #print('Step 2:')
   
   # Convert int params back to correct type.
   PQ = tf.cast(PQ_f, dtype=tf.int16).numpy()
@@ -1515,11 +1508,9 @@ def solver_step2(batchSize_f, pixelsX_f, pixelsY_f, Nlay_f, Lx, Ly,
   return I, Z, k0, kinc_x0, kinc_y0, kinc_z0, KX, KY, KZref, KZtrn
 
 solver_step2_recompute = tf.recompute_grad(solver_step2)
-solver_step2_recompute_dy = checkpointing_dy.checkpointable(solver_step2)
 
 
 def solver_step3(I, Z, KX, KY):
-  #print('Step 3:')
 
   KZ = I - tf.linalg.matmul(KX, KX) - tf.linalg.matmul(KY, KY)
   KZ = tf.math.sqrt(KZ)
@@ -1546,11 +1537,9 @@ def solver_step3(I, Z, KX, KY):
   return V0, W0
 
 solver_step3_recompute = tf.recompute_grad(solver_step3)
-solver_step3_recompute_dy = checkpointing_dy.checkpointable(solver_step3)
 
 
 def solver_step4(batchSize_f, pixelsX_f, pixelsY_f, PQ_f):
-  #print('Step 4:')
 
   # Convert int params back to correct type.
   PQ = tf.cast(PQ_f, dtype=tf.int16).numpy()
@@ -1574,11 +1563,9 @@ def solver_step4(batchSize_f, pixelsX_f, pixelsY_f, PQ_f):
   return SG
 
 solver_step4_recompute = tf.recompute_grad(solver_step4)
-solver_step4_recompute_dy = checkpointing_dy.checkpointable(solver_step4)
 
 
 def solver_step5(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG):
-  #print('Step 5:')
 
   # Convert int params back to correct type.
   Nlay = int(Nlay_f)
@@ -1671,7 +1658,6 @@ def solver_step5(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG):
   return S, SG
 
 def solver_step5p1(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG):
-  #print('Step 5.1:')
 
   # Convert int params back to correct type.
   Nlay = int(Nlay_f)
@@ -1722,7 +1708,6 @@ def solver_step5p1(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG):
   return P, Q, LAM, W
 
 def solver_step5p2(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG, P, Q, LAM, W):
-  #print('Step 5.2:')
 
   # Convert int params back to correct type.
   Nlay = int(Nlay_f)
@@ -1740,7 +1725,6 @@ def solver_step5p2(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG, P, Q, LAM, W):
   return A, B
 
 def solver_step5p3(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG, LAM):
-  #print('Step 5.3:')
   
   arg = -LAM * k0 * L
 
@@ -1752,7 +1736,6 @@ def solver_step5p3(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG, LAM):
   return X0
 
 def solver_step5p4(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG, LAM, X0):
-  #print('Step 5.3:')
   
   arg = -LAM * k0 * L
 
@@ -1763,7 +1746,6 @@ def solver_step5p4(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG, LAM, X0):
   return X
 
 def solver_step5p5(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG, A, B, X):
-  #print('Step 5.4:')
 
   # Convert int params back to correct type.
   Nlay = int(Nlay_f)
@@ -1806,7 +1788,6 @@ def solver_step5p5(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG, A, B, X):
 
 
 solver_step5_recompute = tf.recompute_grad(solver_step5)
-solver_step5_recompute_dy = checkpointing_dy.checkpointable(solver_step5)
 
 solver_step5p1_recompute = tf.recompute_grad(solver_step5p1)
 solver_step5p2_recompute = tf.recompute_grad(solver_step5p2)
@@ -1816,7 +1797,6 @@ solver_step5p5_recompute = tf.recompute_grad(solver_step5p5)
 
 
 def solver_step6(I, Z, KX, KY, KZref, KZtrn, W0, V0, er1, ur1):
-  #print('Step 6:')
 
   # Eliminate layer dimension for tensors as they are unchanging on this dimension.
   KX = KX[:, :, :, 0, :, :]
@@ -1863,11 +1843,9 @@ def solver_step6(I, Z, KX, KY, KZref, KZtrn, W0, V0, er1, ur1):
   return I, Z, KX, KY, KZref, KZtrn, W0, V0, W_ref, SR
 
 solver_step6_recompute = tf.recompute_grad(solver_step6)
-solver_step6_recompute_dy = checkpointing_dy.checkpointable(solver_step6)
 
 
 def solver_step7(I, Z, KX, KY, KZref, KZtrn, W0, V0, er2, ur2):
-  #print('Step 7:')
   
   Q_trn_00 = tf.linalg.matmul(KX, KY)
   Q_trn_01 = ur2 * er2 * I - tf.linalg.matmul(KX, KX)
@@ -1904,23 +1882,19 @@ def solver_step7(I, Z, KX, KY, KZref, KZtrn, W0, V0, er2, ur2):
   return W_trn, ST
 
 solver_step7_recompute = tf.recompute_grad(solver_step7)
-solver_step7_recompute_dy = checkpointing_dy.checkpointable(solver_step7)
 
 
 def solver_step8(SG, SR, ST):
-  #print('Step 8:')
-  
+
   SG = rcwa_utils.redheffer_star_product(SR, SG)
   SG = rcwa_utils.redheffer_star_product(SG, ST)
   
   return SG
 
 solver_step8_recompute = tf.recompute_grad(solver_step8)
-solver_step8_recompute_dy = checkpointing_dy.checkpointable(solver_step8)
 
 
 def solver_step9(batchSize_f, pixelsX_f, pixelsY_f, PQ_f, pte, ptm, kinc_x0, kinc_y0, kinc_z0, W_ref):
-  #print('Step 9:')
   
   # Convert int params back to correct type.
   PQ = tf.cast(PQ_f, dtype=tf.int16).numpy()
@@ -1983,11 +1957,9 @@ def solver_step9(batchSize_f, pixelsX_f, pixelsY_f, PQ_f, pte, ptm, kinc_x0, kin
   return W_ref_inv, esrc
 
 solver_step9_recompute = tf.recompute_grad(solver_step9)
-solver_step9_recompute_dy = checkpointing_dy.checkpointable(solver_step9)
 
 
 def solver_step10(PQ_f, KX, KY, KZref, KZtrn, SG, W_ref, W_trn, W_ref_inv, esrc):
-  #print('Step 10:')
   
   # Convert int params back to correct type.
   PQ = tf.cast(PQ_f, dtype=tf.int16).numpy()
@@ -2016,11 +1988,9 @@ def solver_step10(PQ_f, KX, KY, KZref, KZtrn, SG, W_ref, W_trn, W_ref_inv, esrc)
   return rx, ry, rz, tx, ty, tz
 
 solver_step10_recompute = tf.recompute_grad(solver_step10)
-solver_step10_recompute_dy = checkpointing_dy.checkpointable(solver_step10)
 
 
 def solver_step11(batchSize_f, pixelsX_f, pixelsY_f, PQ_f, kinc_z0, KZref, KZtrn, ur1, ur2, rx, ry, rz, tx, ty, tz):
-  #print('Step 11:')
   
   # Convert int params back to correct type.
   PQ = tf.cast(PQ_f, dtype=tf.int16).numpy()
@@ -2049,7 +2019,6 @@ def solver_step11(batchSize_f, pixelsX_f, pixelsY_f, PQ_f, kinc_z0, KZref, KZtrn
   return R, REF, T, TRN
 
 solver_step11_recompute = tf.recompute_grad(solver_step11)
-solver_step11_recompute_dy = checkpointing_dy.checkpointable(solver_step11)
 
 
 def simulate_allsteps(ER_t, UR_t, params):
@@ -2145,213 +2114,6 @@ def simulate_allsteps(ER_t, UR_t, params):
   
   ### Step 11: Compute diffraction efficiences ###
   R, REF, T, TRN = solver_step11(batchSize_f, pixelsX_f, pixelsY_f, PQ_f, kinc_z0, KZref, KZtrn, ur1, ur2, rx, ry, rz, tx, ty, tz)
-
-  # Store the transmission/reflection coefficients and powers in a dictionary.
-  outputs = dict({})
-  outputs['rx'] = rx
-  outputs['ry'] = ry
-  outputs['rz'] = rz
-  outputs['R'] = R
-  outputs['REF'] = REF
-  outputs['tx'] = tx
-  outputs['ty'] = ty
-  outputs['tz'] = tz
-  outputs['T'] = T
-  outputs['TRN'] = TRN
-
-  return outputs
-
-
-def simulate_recompute(ER_t, UR_t, params):
-  '''
-    Calculates the transmission/reflection coefficients for a unit cell with a
-    given permittivity/permeability distribution and the batch of input conditions 
-    (e.g., wavelengths, wavevectors, polarizations) for a fixed real space grid
-    and number of Fourier harmonics.
-
-    Args:
-        ER_t: A `tf.Tensor` of shape `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)`
-        and dtype `tf.complex64` specifying the relative permittivity distribution
-        of the unit cell.
-
-        UR_t: A `tf.Tensor` of shape `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)`
-        and dtype `tf.complex64` specifying the relative permeability distribution
-        of the unit cell.
-
-        params: A `dict` containing simulation and optimization settings.
-    Returns:
-        outputs: A `dict` containing the keys {'rx', 'ry', 'rz', 'R', 'ref', 
-        'tx', 'ty', 'tz', 'T', 'TRN'} corresponding to the computed reflection/tranmission
-        coefficients and powers.
-  '''
-
-  # Extract parameters from the `params` dictionary.
-  batchSize = params['batchSize']
-  pixelsX = params['pixelsX']
-  pixelsY = params['pixelsY']
-  L = params['L']
-  Nlay = params['Nlay']
-  Lx = params['Lx']
-  Ly = params['Ly']
-  theta = params['theta']
-  phi = params['phi']
-  pte = params['pte']
-  ptm = params['ptm']
-  lam0 = params['lam0']
-  er1 = params['er1']
-  er2 = params['er2']
-  ur1 = params['ur1']
-  ur2 = params['ur2']
-  PQ = params['PQ']
-
-  # Convert int parameters to floats, as required by arguments to functions decorated
-  # with tf.recompute_grad.
-  PQ_f = tf.convert_to_tensor(PQ, dtype=tf.float32)
-  batchSize_f = float(batchSize)
-  pixelsX_f = float(pixelsX)
-  pixelsY_f = float(pixelsY)
-  Nlay_f = float(Nlay)
-
-  ### Step 1: Build convolution matrices for the permittivity and permeability ###
-  ERC, URC = solver_step1(ER_t, UR_t, PQ_f)
-  
-  ### Step 2: Wave vector expansion ###
-  I, Z, k0, kinc_x0, kinc_y0, kinc_z0, KX, KY, KZref, KZtrn = solver_step2(
-      batchSize_f, pixelsX_f, pixelsY_f, Nlay_f, Lx, Ly, theta, phi, lam0, er1, er2, ur1, ur2, PQ_f)
-
-  ### Step 3: Free Space ###
-  V0, W0 = solver_step3(I, Z, KX, KY)
-
-  ### Step 4: Initialize Global Scattering Matrix ###
-  SG = solver_step4(batchSize_f, pixelsX_f, pixelsY_f, PQ_f)
-
-  ### Step 5: Calculate eigenmodes ###
-  P, Q, LAM, W = solver_step5p1(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG)
-
-  A, B = solver_step5p2(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG, P, Q, LAM, W)
-
-  X0 = solver_step5p3(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG, LAM)
-    
-  X = solver_step5p4_recompute(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG, LAM, X0)
-    
-  S, SG = solver_step5p5(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG, A, B, X)
-
-  ### Step 6: Reflection side ###
-  I, Z, KX, KY, KZref, KZtrn, W0, V0, W_ref, SR = solver_step6(I, Z, KX, KY, KZref, KZtrn, W0, V0, er1, ur1)
-
-  ### Step 7: Transmission side ###
-  W_trn, ST = solver_step7(I, Z, KX, KY, KZref, KZtrn, W0, V0, er2, ur2)
-
-  ### Step 8: Compute global scattering matrix ###
-  SG = solver_step8(SG, SR, ST)
-
-  ### Step 9: Compute source parameters ###
-  W_ref_inv, esrc = solver_step9(batchSize_f, pixelsX_f, pixelsY_f, PQ_f, pte, ptm, kinc_x0, kinc_y0, kinc_z0, W_ref)
-
-  ### Step 10: Compute reflected and transmitted fields ###
-  rx, ry, rz, tx, ty, tz = solver_step10(PQ_f, KX, KY, KZref, KZtrn, SG, W_ref, W_trn, W_ref_inv, esrc)
-
-  ### Step 11: Compute diffraction efficiences ###
-  R, REF, T, TRN = solver_step11(batchSize_f, pixelsX_f, pixelsY_f, PQ_f, kinc_z0, KZref, KZtrn, ur1, ur2, rx, ry, rz, tx, ty, tz)
-
-  # Store the transmission/reflection coefficients and powers in a dictionary.
-  outputs = dict({})
-  outputs['rx'] = rx
-  outputs['ry'] = ry
-  outputs['rz'] = rz
-  outputs['R'] = R
-  outputs['REF'] = REF
-  outputs['tx'] = tx
-  outputs['ty'] = ty
-  outputs['tz'] = tz
-  outputs['T'] = T
-  outputs['TRN'] = TRN
-
-  return outputs
-
-def simulate_recompute_dy(ER_t, UR_t, params):
-  '''
-    Calculates the transmission/reflection coefficients for a unit cell with a
-    given permittivity/permeability distribution and the batch of input conditions 
-    (e.g., wavelengths, wavevectors, polarizations) for a fixed real space grid
-    and number of Fourier harmonics.
-
-    Args:
-        ER_t: A `tf.Tensor` of shape `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)`
-        and dtype `tf.complex64` specifying the relative permittivity distribution
-        of the unit cell.
-
-        UR_t: A `tf.Tensor` of shape `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)`
-        and dtype `tf.complex64` specifying the relative permeability distribution
-        of the unit cell.
-
-        params: A `dict` containing simulation and optimization settings.
-    Returns:
-        outputs: A `dict` containing the keys {'rx', 'ry', 'rz', 'R', 'ref', 
-        'tx', 'ty', 'tz', 'T', 'TRN'} corresponding to the computed reflection/tranmission
-        coefficients and powers.
-  '''
-
-  # Extract parameters from the `params` dictionary.
-  batchSize = params['batchSize']
-  pixelsX = params['pixelsX']
-  pixelsY = params['pixelsY']
-  L = params['L']
-  Nlay = params['Nlay']
-  Lx = params['Lx']
-  Ly = params['Ly']
-  theta = params['theta']
-  phi = params['phi']
-  pte = params['pte']
-  ptm = params['ptm']
-  lam0 = params['lam0']
-  er1 = params['er1']
-  er2 = params['er2']
-  ur1 = params['ur1']
-  ur2 = params['ur2']
-  PQ = params['PQ']
-
-  # Convert int parameters to floats, as required by arguments to functions decorated
-  # with tf.recompute_grad.
-  PQ_f = tf.convert_to_tensor(PQ, dtype=tf.float32)
-  batchSize_f = float(batchSize)
-  pixelsX_f = float(pixelsX)
-  pixelsY_f = float(pixelsY)
-  Nlay_f = float(Nlay)
-
-  ### Step 1: Build convolution matrices for the permittivity and permeability ###
-  ERC, URC = solver_step1_recompute_dy(ER_t, UR_t, PQ_f, _checkpoint=True)
-  
-  ### Step 2: Wave vector expansion ###
-  I, Z, k0, kinc_x0, kinc_y0, kinc_z0, KX, KY, KZref, KZtrn = solver_step2_recompute(
-      batchSize_f, pixelsX_f, pixelsY_f, Nlay_f, Lx, Ly, theta, phi, lam0, er1, er2, ur1, ur2, PQ_f)
-
-  ### Step 3: Free Space ###
-  V0, W0 = solver_step3_recompute(I, Z, KX, KY)
-
-  ### Step 4: Initialize Global Scattering Matrix ###
-  SG = solver_step4_recompute(batchSize_f, pixelsX_f, pixelsY_f, PQ_f)
-
-  ### Step 5: Calculate eigenmodes ###
-  S, SG = solver_step5_recompute(L, Nlay_f, ERC, URC, k0, KX, KY, V0, W0, SG)
-
-  ### Step 6: Reflection side ###
-  I, Z, KX, KY, KZref, KZtrn, W0, V0, W_ref, SR = solver_step6_recompute(I, Z, KX, KY, KZref, KZtrn, W0, V0, er1, ur1)
-
-  ### Step 7: Transmission side ###
-  W_trn, ST = solver_step7_recompute(I, Z, KX, KY, KZref, KZtrn, W0, V0, er2, ur2)
-
-  ### Step 8: Compute global scattering matrix ###
-  SG = solver_step8_recompute(SG, SR, ST)
-
-  ### Step 9: Compute source parameters ###
-  W_ref_inv, esrc = solver_step9_recompute(batchSize_f, pixelsX_f, pixelsY_f, PQ_f, pte, ptm, kinc_x0, kinc_y0, kinc_z0, W_ref)
-
-  ### Step 10: Compute reflected and transmitted fields ###
-  rx, ry, rz, tx, ty, tz = solver_step10_recompute(PQ_f, KX, KY, KZref, KZtrn, SG, W_ref, W_trn, W_ref_inv, esrc)
-
-  ### Step 11: Compute diffraction efficiences ###
-  R, REF, T, TRN = solver_step11_recompute(batchSize_f, pixelsX_f, pixelsY_f, PQ_f, kinc_z0, KZref, KZtrn, ur1, ur2, rx, ry, rz, tx, ty, tz)
 
   # Store the transmission/reflection coefficients and powers in a dictionary.
   outputs = dict({})
