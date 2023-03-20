@@ -342,17 +342,53 @@ def define_input_fields(params):
   return torch.exp(1j * phase_def)
 
 
-def solver_step1(ER_t, UR_t, PQ):
+def simulate(ER_t, UR_t, params):
+  '''
+    Calculates the transmission/reflection coefficients for a unit cell with a
+    given permittivity/permeability distribution and the batch of input conditions 
+    (e.g., wavelengths, wavevectors, polarizations) for a fixed real space grid
+    and number of Fourier harmonics.
 
+    Args:
+        ER_t: A `torch.Tensor` of shape `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)`
+        and dtype `torch.complex64` specifying the relative permittivity distribution
+        of the unit cell.
+
+        UR_t: A `torch.Tensor` of shape `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)`
+        and dtype `torch.complex64` specifying the relative permeability distribution
+        of the unit cell.
+
+        params: A `dict` containing simulation and optimization settings.
+    Returns:
+        outputs: A `dict` containing the keys {'rx', 'ry', 'rz', 'R', 'ref', 
+        'tx', 'ty', 'tz', 'T', 'TRN'} corresponding to the computed reflection/tranmission
+        coefficients and powers.
+  '''
+
+  # Extract parameters from the `params` dictionary.
+  batchSize = params['batchSize']
+  pixelsX = params['pixelsX']
+  pixelsY = params['pixelsY']
+  L = params['L']
+  Nlay = params['Nlay']
+  Lx = params['Lx']
+  Ly = params['Ly']
+  theta = params['theta']
+  phi = params['phi']
+  pte = params['pte']
+  ptm = params['ptm']
+  lam0 = params['lam0']
+  er1 = params['er1']
+  er2 = params['er2']
+  ur1 = params['ur1']
+  ur2 = params['ur2']
+  PQ = params['PQ']
+  
+  ### Step 1: Build convolution matrices for the permittivity and permeability ###
   ERC = rcwa_utils_pt.convmat(ER_t, PQ[0], PQ[1])
   URC = rcwa_utils_pt.convmat(UR_t, PQ[0], PQ[1])
   
-  return ERC, URC
-
-
-def solver_step2(batchSize, pixelsX, pixelsY, Nlay, Lx, Ly,
-                        theta, phi, lam0, er1, er2, ur1, ur2, PQ):  
-  
+  ### Step 2: Wave vector expansion ###
   I = torch.eye(np.prod(PQ), dtype = torch.complex64)
   I = I[None, None, None, None, :, :]
   I = torch.tile(I, (batchSize, pixelsX, pixelsY, Nlay, 1, 1))
@@ -414,12 +450,8 @@ def solver_step2(batchSize, pixelsX, pixelsY, Nlay, Lx, Ly,
   KZtrn = KZtrn - torch.matmul(KX, KX) - torch.matmul(KY, KY)
   KZtrn = torch.sqrt(KZtrn)
   KZtrn = torch.conj(KZtrn)
-
-  return I, Z, k0, kinc_x0, kinc_y0, kinc_z0, KX, KY, KZref, KZtrn
-
-
-def solver_step3(I, Z, KX, KY):
-
+    
+  ### Step 3: Free Space ###
   KZ = I - torch.matmul(KX, KX) - torch.matmul(KY, KY)
   KZ = torch.sqrt(KZ)
   KZ = torch.conj(KZ)
@@ -441,12 +473,8 @@ def solver_step3(I, Z, KX, KY):
   LAM_free = torch.cat([LAM_free_row0, LAM_free_row1], dim = 4)
 
   V0 = torch.matmul(Q_free, torch.linalg.inv(LAM_free))
-
-  return V0, W0
-
-
-def solver_step4(batchSize, pixelsX, pixelsY, PQ):
   
+  ### Step 4: Initialize Global Scattering Matrix ###
   SG = dict({})
   SG_S11 = torch.zeros((2 * np.prod(PQ), 2 * np.prod(PQ)), dtype = torch.complex64)
   SG['S11'] = rcwa_utils_pt.expand_and_tile_pt(SG_S11, batchSize, pixelsX, pixelsY)
@@ -460,11 +488,8 @@ def solver_step4(batchSize, pixelsX, pixelsY, PQ):
   SG_S22 = torch.zeros((2 * np.prod(PQ), 2 * np.prod(PQ)), dtype = torch.complex64)
   SG['S22'] = rcwa_utils_pt.expand_and_tile_pt(SG_S22, batchSize, pixelsX, pixelsY)
 
-  return SG
+  ### Step 5: Calculate eigenmodes ###
 
-
-def solver_step5(L, Nlay, ERC, URC, k0, KX, KY, V0, W0, SG):
-    
   # Build the eigenvalue problem.
   P_00 = torch.matmul(KX, torch.linalg.inv(ERC))
   P_00 = torch.matmul(P_00, KY)
@@ -552,11 +577,7 @@ def solver_step5(L, Nlay, ERC, URC, k0, KX, KY, V0, W0, SG):
     S_layer['S22'] = S['S22'][:, :, :, l, :, :]
     SG = rcwa_utils_pt.redheffer_star_product(SG, S_layer)
 
-  return S, SG
-
-
-def solver_step6(I, Z, KX, KY, KZref, KZtrn, W0, V0, er1, ur1):
-
+  ### Step 6: Reflection side ###
   # Eliminate layer dimension for tensors as they are unchanging on this dimension.
   KX = KX[:, :, :, 0, :, :]
   KY = KY[:, :, :, 0, :, :]
@@ -598,12 +619,8 @@ def solver_step6(I, Z, KX, KY, KZref, KZtrn, W0, V0, er1, ur1):
   SR_S21 = torch.matmul(SR_S21, B_ref)
   SR['S21'] = 0.5 * (A_ref - SR_S21)
   SR['S22'] = torch.matmul(B_ref, A_ref_inv)
-    
-  return I, Z, KX, KY, KZref, KZtrn, W0, V0, W_ref, SR
 
-
-def solver_step7(I, Z, KX, KY, KZref, KZtrn, W0, V0, er2, ur2):
-  
+  ### Step 7: Transmission side ###
   Q_trn_00 = torch.matmul(KX, KY)
   Q_trn_01 = ur2 * er2 * I - torch.matmul(KX, KX)
   Q_trn_10 = torch.matmul(KY, KY) - ur2 * er2 * I
@@ -635,20 +652,12 @@ def solver_step7(I, Z, KX, KY, KZref, KZtrn, W0, V0, er2, ur2):
   ST['S12'] = 0.5 * (A_trn - ST_S12)
   ST['S21'] = 2 * A_trn_inv
   ST['S22'] = torch.matmul(-A_trn_inv, B_trn)
-    
-  return W_trn, ST
 
-
-def solver_step8(SG, SR, ST):
-  
+  ### Step 8: Compute global scattering matrix ###
   SG = rcwa_utils_pt.redheffer_star_product(SR, SG)
   SG = rcwa_utils_pt.redheffer_star_product(SG, ST)
   
-  return SG
-
-
-def solver_step9(batchSize, pixelsX, pixelsY, PQ, pte, ptm, kinc_x0, kinc_y0, kinc_z0, W_ref):
-    
+  ### Step 9: Compute source parameters ###
   # Compute mode coefficients of the source.
   delta = torch.zeros((batchSize, pixelsX, pixelsY, np.prod(PQ)), dtype = torch.float32)
   delta[:, :, :, int(np.prod(PQ) / 2.0)] = 1
@@ -701,12 +710,8 @@ def solver_step9(batchSize, pixelsX, pixelsY, PQ, pte, ptm, kinc_x0, kinc_y0, ki
   esrc = esrc[:, :, :, :, None]
 
   W_ref_inv = torch.linalg.inv(W_ref)
- 
-  return W_ref_inv, esrc
 
-
-def solver_step10(PQ, KX, KY, KZref, KZtrn, SG, W_ref, W_trn, W_ref_inv, esrc):
-    
+  ### Step 10: Compute reflected and transmitted fields ###
   csrc = torch.matmul(W_ref_inv, esrc)
 
   # Compute tranmission and reflection mode coefficients.
@@ -727,12 +732,8 @@ def solver_step10(PQ, KX, KY, KZref, KZtrn, SG, W_ref, W_trn, W_ref_inv, esrc):
   rz = torch.matmul(-KZref_inv, rz)
   tz = torch.matmul(KX, tx) + torch.matmul(KY, ty)
   tz = torch.matmul(-KZtrn_inv, tz)
- 
-  return rx, ry, rz, tx, ty, tz
 
-
-def solver_step11(batchSize, pixelsX, pixelsY, PQ, kinc_z0, KZref, KZtrn, ur1, ur2, rx, ry, rz, tx, ty, tz):
-
+  ### Step 11: Compute diffraction efficiences ###
   rx2 = torch.real(rx) ** 2 + torch.imag(rx) ** 2
   ry2 = torch.real(ry) ** 2 + torch.imag(ry) ** 2
   rz2 = torch.real(rz) ** 2 + torch.imag(rz) ** 2
@@ -751,84 +752,6 @@ def solver_step11(batchSize, pixelsX, pixelsY, PQ, kinc_z0, KZref, KZtrn, ur1, u
   T = torch.reshape(T, (batchSize, pixelsX, pixelsY, PQ[0], PQ[1]))
   TRN = torch.sum(T, dim = [3, 4])
   
-  return R, REF, T, TRN
-
-
-def simulate(ER_t, UR_t, params):
-  '''
-    Calculates the transmission/reflection coefficients for a unit cell with a
-    given permittivity/permeability distribution and the batch of input conditions 
-    (e.g., wavelengths, wavevectors, polarizations) for a fixed real space grid
-    and number of Fourier harmonics.
-
-    Args:
-        ER_t: A `torch.Tensor` of shape `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)`
-        and dtype `torch.complex64` specifying the relative permittivity distribution
-        of the unit cell.
-
-        UR_t: A `torch.Tensor` of shape `(batchSize, pixelsX, pixelsY, Nlayer, Nx, Ny)`
-        and dtype `torch.complex64` specifying the relative permeability distribution
-        of the unit cell.
-
-        params: A `dict` containing simulation and optimization settings.
-    Returns:
-        outputs: A `dict` containing the keys {'rx', 'ry', 'rz', 'R', 'ref', 
-        'tx', 'ty', 'tz', 'T', 'TRN'} corresponding to the computed reflection/tranmission
-        coefficients and powers.
-  '''
-
-  # Extract parameters from the `params` dictionary.
-  batchSize = params['batchSize']
-  pixelsX = params['pixelsX']
-  pixelsY = params['pixelsY']
-  L = params['L']
-  Nlay = params['Nlay']
-  Lx = params['Lx']
-  Ly = params['Ly']
-  theta = params['theta']
-  phi = params['phi']
-  pte = params['pte']
-  ptm = params['ptm']
-  lam0 = params['lam0']
-  er1 = params['er1']
-  er2 = params['er2']
-  ur1 = params['ur1']
-  ur2 = params['ur2']
-  PQ = params['PQ']
-
-  ### Step 1: Build convolution matrices for the permittivity and permeability ###
-  ERC, URC = solver_step1( ER_t, UR_t, PQ)
-  
-  ### Step 2: Wave vector expansion ###
-  I, Z, k0, kinc_x0, kinc_y0, kinc_z0, KX, KY, KZref, KZtrn = solver_step2(batchSize, pixelsX, pixelsY, Nlay, Lx, Ly, theta, phi, lam0, er1, er2, ur1, ur2, PQ)
-
-  ### Step 3: Free Space ###
-  V0, W0 = solver_step3(I, Z, KX, KY)
-
-  ### Step 4: Initialize Global Scattering Matrix ###
-  SG = solver_step4(batchSize, pixelsX, pixelsY, PQ)
-  
-  ### Step 5: Calculate eigenmodes ###
-  S, SG = solver_step5(L, Nlay, ERC, URC, k0, KX, KY, V0, W0, SG)
-  
-  ### Step 6: Reflection side ###
-  I, Z, KX, KY, KZref, KZtrn, W0, V0, W_ref, SR = solver_step6(I, Z, KX, KY, KZref, KZtrn, W0, V0, er1, ur1)
-  
-  ### Step 7: Transmission side ###
-  W_trn, ST = solver_step7(I, Z, KX, KY, KZref, KZtrn, W0, V0, er2, ur2)
-  
-  ### Step 8: Compute global scattering matrix ###
-  SG = solver_step8(SG, SR, ST)
-  
-  ### Step 9: Compute source parameters ###
-  W_ref_inv, esrc = solver_step9(batchSize, pixelsX, pixelsY, PQ, pte, ptm, kinc_x0, kinc_y0, kinc_z0, W_ref)
-  
-  ### Step 10: Compute reflected and transmitted fields ###
-  rx, ry, rz, tx, ty, tz = solver_step10(PQ, KX, KY, KZref, KZtrn, SG, W_ref, W_trn, W_ref_inv, esrc)
-  
-  ### Step 11: Compute diffraction efficiences ###
-  R, REF, T, TRN = solver_step11(batchSize, pixelsX, pixelsY, PQ, kinc_z0, KZref, KZtrn, ur1, ur2, rx, ry, rz, tx, ty, tz)
-
   # Store the transmission/reflection coefficients and powers in a dictionary.
   outputs = dict({})
   outputs['rx'] = rx
@@ -841,5 +764,5 @@ def simulate(ER_t, UR_t, params):
   outputs['tz'] = tz
   outputs['T'] = T
   outputs['TRN'] = TRN
-
+  
   return outputs
