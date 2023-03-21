@@ -15,6 +15,7 @@ hyperparameter_gridsearch: use to optimize many devices for a given grid of
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.lines as lines
 from matplotlib import colors
 import itertools
 import json
@@ -242,6 +243,48 @@ def display_layered_metasurface(ER_t, params):
         images[l].set_norm(norm)
         
     plt.show()
+    
+
+def display_multiple_metasurfaces(h_list, params):
+    '''
+    Displays stacked representations of a list of devices.
+
+    Args:
+        h_list: A list of `torch.Tensor`s of shape `(pixelsX, pixelsY)` specifying the height representation
+            of multiple metasurfaces.
+        
+        params: A `dict` containing simulation and optimization settings.
+
+    Returns: None
+
+    '''
+    
+    # Set up the plot.
+    norm = colors.Normalize(vmin=params['eps_min'], vmax=params['eps_max'])
+    images=[]
+    fig, axes = plt.subplots(params['Nlay'], len(h_list), figsize=(12,12))
+    
+    # For each device...
+    for d in range(len(h_list)):
+    
+        # Get stacked representation of the surface.
+        ER_t, UR_t = generate_layered_metasurface(torch.Tensor(h_list[d]), params)
+
+        # Then for each layer...
+        for l in range(params['Nlay']):
+            img = torch.permute(torch.squeeze(ER_t[0,:,:,l,:,:]),(0,2,1,3))
+            img = torch.real(torch.reshape(img, (params['pixelsX']*params['Nx'],params['pixelsY']*params['Ny'])))
+            images.append(axes[l,d].matshow(img.detach().cpu().numpy(), interpolation='nearest'))
+            axes[l,d].get_xaxis().set_visible(False)
+            axes[l,d].get_yaxis().set_visible(False)
+            images[-1].set_norm(norm)
+        
+        # Add line dividing devices.
+        #if d > 0:
+        #    div_x = d/(len(h_list))
+        #    fig.lines.append(plt.Line2D([div_x, div_x], [0, 1], transform=fig.transFigure, color='black'))
+        
+    plt.show()
 
 
 def evaluate_solution(focal_plane, params):
@@ -341,6 +384,10 @@ def optimize_device(user_params):
     # Get the initial height representation of the metasurface.
     h = torch.autograd.Variable(init_layered_metasurface(params, initial_height=params['initial_height']),
                                 requires_grad=True)
+    
+    # Initialize list of height representations. Used to track device change over optimzation run.
+    h_list = []
+    h_list.append(h)
 
     # Define optimizer.
     opt = torch.optim.Adam([h], lr=params['learning_rate'])
@@ -350,6 +397,7 @@ def optimize_device(user_params):
     if params['enable_print']: print('Optimizing... ', end="")
     for i in range(params['N']):
         if params['enable_print']: print(str(i) + ', ', end="")
+        
         opt.zero_grad()
         l = params['loss_function'](h, params)
         l.backward()
@@ -358,6 +406,10 @@ def optimize_device(user_params):
 
         # Anneal sigmoid coefficient.
         params['sigmoid_coeff'] += (params['sigmoid_update'] / params['N'])
+        
+        # Track change in h.
+        h_list.append(h.clone().detach())
+        
     if params['enable_print']: print('Done.')
 
     # Round off to a final, admissable, solution.
@@ -393,7 +445,7 @@ def optimize_device(user_params):
         
         log_result(result, params['log_filename_prefix'] + params['parameter_string'] + user_params['log_filename_extension'])
     
-    return h, loss, params, focal_plane
+    return h, loss, params, focal_plane, h_list
 
 
 def hyperparameter_gridsearch(user_params):
